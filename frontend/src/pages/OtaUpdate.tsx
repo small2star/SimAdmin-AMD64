@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import type { ReactNode } from 'react'
 import {
   Box,
   Typography,
@@ -52,6 +53,15 @@ import type { OtaLatestReleaseResponse, OtaStatusResponse, OtaUploadResponse } f
 
 type ProxyPreset = 'https://gh-proxy.com/' | 'https://ghproxy.net/' | 'https://githubproxy.cc/' | 'custom'
 type OnlineUpdateState = 'idle' | 'checking' | 'available' | 'latest' | 'downloading'
+type MarkdownHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6
+type MarkdownListItem = { text: string; indent: number }
+type MarkdownBlock =
+  | { type: 'heading'; level: MarkdownHeadingLevel; text: string }
+  | { type: 'paragraph'; text: string }
+  | { type: 'list'; ordered: boolean; items: MarkdownListItem[] }
+  | { type: 'code'; code: string; language?: string }
+  | { type: 'quote'; text: string }
+  | { type: 'rule' }
 
 const GITHUB_LATEST_RELEASE_PAGE = 'https://github.com/3899/SimAdmin/releases/latest'
 const BEIJING_TIME_ZONE = 'Asia/Shanghai'
@@ -115,6 +125,311 @@ function inferArch(assetName?: string) {
   if (/x86_64|amd64/i.test(assetName)) return 'x86_64-unknown-linux-gnu'
   if (/armv7|armhf/i.test(assetName)) return 'armv7-unknown-linux-musleabihf'
   return '未知'
+}
+
+function isMarkdownBlockStart(line: string) {
+  const trimmed = line.trim()
+  return (
+    /^#{1,6}\s+/.test(trimmed) ||
+    /^(```|~~~)/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^([-*_])(?:\s*\1){2,}$/.test(trimmed) ||
+    /^\s*[-*+]\s+/.test(line) ||
+    /^\s*\d+[.)]\s+/.test(line)
+  )
+}
+
+function parseMarkdownBlocks(markdown: string) {
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
+  const blocks: MarkdownBlock[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      index += 1
+      continue
+    }
+
+    const fenceMatch = trimmed.match(/^(```|~~~)\s*([^`]*)$/)
+    if (fenceMatch) {
+      const fence = fenceMatch[1]
+      const language = fenceMatch[2]?.trim() || undefined
+      const codeLines: string[] = []
+      index += 1
+
+      while (index < lines.length && !lines[index].trim().startsWith(fence)) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+
+      if (index < lines.length) {
+        index += 1
+      }
+
+      blocks.push({ type: 'code', code: codeLines.join('\n'), language })
+      continue
+    }
+
+    if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
+      blocks.push({ type: 'rule' })
+      index += 1
+      continue
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
+    if (headingMatch) {
+      blocks.push({
+        type: 'heading',
+        level: Math.min(headingMatch[1].length, 6) as MarkdownHeadingLevel,
+        text: headingMatch[2].replace(/\s+#+$/, ''),
+      })
+      index += 1
+      continue
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines: string[] = []
+
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ''))
+        index += 1
+      }
+
+      blocks.push({ type: 'quote', text: quoteLines.join('\n') })
+      continue
+    }
+
+    const unorderedListMatch = line.match(/^(\s*)[-*+]\s+(.+)$/)
+    const orderedListMatch = line.match(/^(\s*)\d+[.)]\s+(.+)$/)
+    if (unorderedListMatch || orderedListMatch) {
+      const ordered = Boolean(orderedListMatch)
+      const items: MarkdownListItem[] = []
+
+      while (index < lines.length) {
+        const currentLine = lines[index]
+        const currentMatch = ordered
+          ? currentLine.match(/^(\s*)\d+[.)]\s+(.+)$/)
+          : currentLine.match(/^(\s*)[-*+]\s+(.+)$/)
+
+        if (!currentMatch) break
+
+        const indent = Math.floor(currentMatch[1].replace(/\t/g, '    ').length / 2)
+        items.push({ indent, text: currentMatch[2] })
+        index += 1
+      }
+
+      blocks.push({ type: 'list', ordered, items })
+      continue
+    }
+
+    const paragraphLines: string[] = []
+
+    while (index < lines.length && lines[index].trim()) {
+      if (paragraphLines.length > 0 && isMarkdownBlockStart(lines[index])) break
+      paragraphLines.push(lines[index].trim())
+      index += 1
+    }
+
+    blocks.push({ type: 'paragraph', text: paragraphLines.join(' ') })
+  }
+
+  return blocks
+}
+
+function isSafeMarkdownHref(href: string) {
+  if (href.startsWith('#') || href.startsWith('/')) return true
+
+  try {
+    const url = new URL(href)
+    return ['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)
+  } catch {
+    return false
+  }
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\[[^\]]+\]\([^)]+\))/g
+  const nodes: ReactNode[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  let tokenIndex = 0
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index))
+    }
+
+    const token = match[0]
+    const key = `${keyPrefix}-inline-${tokenIndex}`
+    tokenIndex += 1
+
+    if (token.startsWith('`')) {
+      nodes.push(
+        <Box
+          component="code"
+          key={key}
+          sx={{
+            px: 0.5,
+            py: 0.125,
+            borderRadius: 0.5,
+            bgcolor: 'action.hover',
+            fontFamily: 'monospace',
+            fontSize: '0.875em',
+          }}
+        >
+          {token.slice(1, -1)}
+        </Box>,
+      )
+    } else if (token.startsWith('**') || token.startsWith('__')) {
+      nodes.push(
+        <Box component="strong" key={key} sx={{ fontWeight: 700 }}>
+          {token.slice(2, -2)}
+        </Box>,
+      )
+    } else if (token.startsWith('~~')) {
+      nodes.push(
+        <Box component="del" key={key}>
+          {token.slice(2, -2)}
+        </Box>,
+      )
+    } else {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+      const label = linkMatch?.[1] ?? token
+      const href = linkMatch?.[2]?.trim()
+
+      if (href && isSafeMarkdownHref(href)) {
+        nodes.push(
+          <Link key={key} href={href} target="_blank" rel="noreferrer" underline="hover">
+            {label}
+          </Link>,
+        )
+      } else {
+        nodes.push(label)
+      }
+    }
+
+    lastIndex = pattern.lastIndex
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex))
+  }
+
+  return nodes
+}
+
+function MarkdownPreview({ source }: { source?: string }) {
+  const blocks = parseMarkdownBlocks(source?.trim() || '无更新日志')
+
+  return (
+    <Box
+      sx={{
+        color: 'text.primary',
+        '& > :first-of-type': { mt: 0 },
+        '& > :last-child': { mb: 0 },
+        '& a': { wordBreak: 'break-all' },
+      }}
+    >
+      {blocks.map((block, index) => {
+        const key = `${block.type}-${index}`
+
+        if (block.type === 'heading') {
+          return (
+            <Typography
+              key={key}
+              component="div"
+              role="heading"
+              aria-level={block.level}
+              variant={block.level <= 2 ? 'subtitle1' : 'subtitle2'}
+              sx={{ mt: index === 0 ? 0 : 1.5, mb: 0.75, fontWeight: 700 }}
+            >
+              {renderInlineMarkdown(block.text, key)}
+            </Typography>
+          )
+        }
+
+        if (block.type === 'paragraph') {
+          return (
+            <Typography key={key} variant="body2" sx={{ my: 1, lineHeight: 1.7 }}>
+              {renderInlineMarkdown(block.text, key)}
+            </Typography>
+          )
+        }
+
+        if (block.type === 'list') {
+          return (
+            <Box
+              key={key}
+              component={block.ordered ? 'ol' : 'ul'}
+              sx={{ my: 1, pl: 3, lineHeight: 1.7 }}
+            >
+              {block.items.map((item, itemIndex) => (
+                <Box
+                  component="li"
+                  key={`${key}-item-${itemIndex}`}
+                  sx={{ ml: item.indent * 2, mb: 0.5, '&::marker': { color: 'text.secondary' } }}
+                >
+                  <Typography component="span" variant="body2">
+                    {renderInlineMarkdown(item.text, `${key}-item-${itemIndex}`)}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          )
+        }
+
+        if (block.type === 'quote') {
+          return (
+            <Box
+              key={key}
+              sx={{
+                my: 1,
+                pl: 1.5,
+                borderLeft: 3,
+                borderColor: 'divider',
+                color: 'text.secondary',
+              }}
+            >
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                {renderInlineMarkdown(block.text, key)}
+              </Typography>
+            </Box>
+          )
+        }
+
+        if (block.type === 'code') {
+          return (
+            <Box
+              key={key}
+              component="pre"
+              sx={{
+                my: 1,
+                p: 1.5,
+                overflow: 'auto',
+                borderRadius: 1,
+                bgcolor: 'action.hover',
+                fontFamily: 'monospace',
+                fontSize: '0.8125rem',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {block.language && (
+                <Box component="span" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
+                  {block.language}
+                </Box>
+              )}
+              <Box component="code">{block.code}</Box>
+            </Box>
+          )
+        }
+
+        return <Divider key={key} sx={{ my: 1.5 }} />
+      })}
+    </Box>
+  )
 }
 
 export default function OtaUpdate() {
@@ -569,11 +884,9 @@ export default function OtaUpdate() {
                     <Typography variant="subtitle2" mb={1}>更新日志 (Release Notes)</Typography>
                     <Paper
                       variant="outlined"
-                      sx={{ p: 2, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', bgcolor: 'background.default' }}
+                      sx={{ p: 2, maxHeight: 220, overflow: 'auto', bgcolor: 'background.default' }}
                     >
-                      <Typography variant="body2" component="pre" sx={{ m: 0, fontFamily: 'inherit', whiteSpace: 'pre-wrap' }}>
-                        {latestRelease.body || '无更新日志'}
-                      </Typography>
+                      <MarkdownPreview source={latestRelease.body} />
                     </Paper>
                   </Box>
                   {downloadUrl && (

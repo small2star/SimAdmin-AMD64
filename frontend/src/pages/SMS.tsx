@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import {
   Box,
   Card,
@@ -24,6 +24,8 @@ import {
   Snackbar,
   useMediaQuery,
   InputAdornment,
+  Checkbox,
+  Tooltip,
 } from '@mui/material'
 import type { Theme } from '@mui/material/styles'
 import {
@@ -33,7 +35,11 @@ import {
   Person,
   ArrowBack,
   Add,
-  DeleteSweep,
+  Checklist,
+  Delete,
+  DeleteOutline,
+  SelectAll,
+  Close,
 } from '@mui/icons-material'
 import { api, type SmsMessage, type SmsStats } from '../api/current'
 
@@ -44,46 +50,84 @@ interface ConversationGroup {
   unreadCount: number
 }
 
+type DeleteTarget =
+  | { type: 'batch' }
+  | { type: 'conversation'; phoneNumber: string; messageCount: number }
+  | { type: 'message'; message: SmsMessage }
+
+function buildConversations(msgs: SmsMessage[]): ConversationGroup[] {
+  const groups = new Map<string, SmsMessage[]>()
+
+  msgs.forEach((msg) => {
+    const key = msg.phone_number
+    if (!groups.has(key)) {
+      groups.set(key, [])
+    }
+    groups.get(key)?.push(msg)
+  })
+
+  const conversationList: ConversationGroup[] = []
+  groups.forEach((groupMessages, phoneNumber) => {
+    groupMessages.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    conversationList.push({
+      phoneNumber,
+      messages: groupMessages,
+      lastMessage: groupMessages[0],
+      unreadCount: groupMessages.filter((m) => m.direction === 'incoming' && m.status === 'received').length,
+    })
+  })
+
+  conversationList.sort(
+    (a, b) => new Date(b.lastMessage.timestamp).getTime() - new Date(a.lastMessage.timestamp).getTime(),
+  )
+
+  return conversationList
+}
+
 export default function SMSPage() {
   const isMobile = useMediaQuery<Theme>((theme: Theme) => theme.breakpoints.down('md'))
-  
+
   const [messages, setMessages] = useState<SmsMessage[]>([])
   const [stats, setStats] = useState<SmsStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [sendLoading, setSendLoading] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
   const [phoneNumber, setPhoneNumber] = useState('')
   const [content, setContent] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const [clearDialogOpen, setClearDialogOpen] = useState(false)
   const [newChatDialogOpen, setNewChatDialogOpen] = useState(false)
   const [newChatNumber, setNewChatNumber] = useState('')
-  
+
   // 对话状态
   const [conversations, setConversations] = useState<ConversationGroup[]>([])
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null)
   const [conversationMessages, setConversationMessages] = useState<SmsMessage[]>([])
   const [conversationLoading, setConversationLoading] = useState(false)
-  
+
+  // 批量管理状态
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedConversationPhones, setSelectedConversationPhones] = useState<Set<string>>(() => new Set())
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set())
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
+
   // 聊天区域滚动引用
   const chatEndRef = useRef<HTMLDivElement>(null)
   // 输入框焦点状态 - 有焦点时暂停刷新避免失焦
   const inputFocusedRef = useRef(false)
 
-  // 滚动到底部
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  // 获取短信列表
   const fetchMessages = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.getSmsList({ limit: 100, offset: 0 })
+      const response = await api.getSmsList({ limit: 1000, offset: 0 })
       if (response.status === 'ok' && response.data) {
         setMessages(response.data.messages)
-        groupConversations(response.data.messages)
+        setConversations(buildConversations(response.data.messages))
       } else {
         setError(response.message)
       }
@@ -94,52 +138,21 @@ export default function SMSPage() {
     }
   }, [])
 
-  // 按联系人分组对话
-  const groupConversations = (msgs: SmsMessage[]) => {
-    const groups = new Map<string, SmsMessage[]>()
-    
-    msgs.forEach(msg => {
-      const key = msg.phone_number
-      if (!groups.has(key)) {
-        groups.set(key, [])
-      }
-      groups.get(key)?.push(msg)
-    })
-
-    const conversationList: ConversationGroup[] = []
-    groups.forEach((messages, phoneNumber) => {
-      messages.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      conversationList.push({
-        phoneNumber,
-        messages,
-        lastMessage: messages[0],
-        unreadCount: messages.filter(m => m.direction === 'incoming' && m.status === 'received').length,
-      })
-    })
-
-    conversationList.sort((a, b) => 
-      new Date(b.lastMessage.timestamp).getTime() - new Date(a.lastMessage.timestamp).getTime()
-    )
-
-    setConversations(conversationList)
-  }
-
-  // 获取对话历史
   const fetchConversation = useCallback(async (phone: string) => {
     setConversationLoading(true)
     try {
-      const response = await api.getSmsConversation({ phone_number: phone })
+      const response = await api.getSmsConversation({ phone_number: phone, limit: 1000 })
       if (response.status === 'ok' && response.data) {
-        const sorted = [...response.data.messages].sort((a, b) => 
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        const sorted = [...response.data.messages].sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
         )
         setConversationMessages(sorted)
         setTimeout(scrollToBottom, 100)
       }
     } catch {
-      const localMsgs = messages.filter(m => m.phone_number === phone)
-      const sorted = [...localMsgs].sort((a, b) => 
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      const localMsgs = messages.filter((m) => m.phone_number === phone)
+      const sorted = [...localMsgs].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
       )
       setConversationMessages(sorted)
       setTimeout(scrollToBottom, 100)
@@ -148,7 +161,6 @@ export default function SMSPage() {
     }
   }, [messages, scrollToBottom])
 
-  // 获取统计信息
   const fetchStats = useCallback(async () => {
     try {
       const response = await api.getSmsStats()
@@ -164,7 +176,6 @@ export default function SMSPage() {
     void fetchMessages()
     void fetchStats()
     const interval = setInterval(() => {
-      // 输入框有焦点时跳过刷新，避免失焦问题
       if (inputFocusedRef.current) {
         return
       }
@@ -174,20 +185,80 @@ export default function SMSPage() {
     return () => clearInterval(interval)
   }, [fetchMessages, fetchStats])
 
-  // 选择对话
+  const messageById = useMemo(() => {
+    const map = new Map<number, SmsMessage>()
+    messages.forEach((msg) => map.set(msg.id, msg))
+    conversationMessages.forEach((msg) => map.set(msg.id, msg))
+    return map
+  }, [messages, conversationMessages])
+
+  const batchSelection = useMemo(() => {
+    const visiblePhones = new Set(conversations.map((conv) => conv.phoneNumber))
+    const phoneNumbers = Array.from(selectedConversationPhones).filter((phone) => visiblePhones.has(phone))
+    const phoneNumberSet = new Set(phoneNumbers)
+    const selectedConversationNumbers = new Set(phoneNumbers)
+    let messageCount = 0
+
+    conversations.forEach((conv) => {
+      if (phoneNumberSet.has(conv.phoneNumber)) {
+        messageCount += conv.messages.length
+      }
+    })
+
+    const ids = Array.from(selectedMessageIds).filter((id) => {
+      const msg = messageById.get(id)
+      if (!msg || phoneNumberSet.has(msg.phone_number)) {
+        return false
+      }
+      selectedConversationNumbers.add(msg.phone_number)
+      messageCount += 1
+      return true
+    })
+
+    return {
+      ids,
+      phoneNumbers,
+      conversationCount: selectedConversationNumbers.size,
+      messageCount,
+    }
+  }, [conversations, messageById, selectedConversationPhones, selectedMessageIds])
+
+  const hasBatchSelection = batchSelection.messageCount > 0
+  const batchSelectionText = `已选 ${batchSelection.conversationCount} 个对话共 ${batchSelection.messageCount}条短信`
+  const smsStats = stats ?? { total: 0, incoming: 0, outgoing: 0 }
+  const allConversationsSelected = conversations.length > 0
+    && conversations.every((conv) => selectedConversationPhones.has(conv.phoneNumber))
+  const currentMessagesSomeSelected = conversationMessages.some(
+    (msg) => selectedConversationPhones.has(msg.phone_number) || selectedMessageIds.has(msg.id),
+  )
+  const currentMessagesAllSelected = conversationMessages.length > 0
+    && conversationMessages.every((msg) => selectedConversationPhones.has(msg.phone_number) || selectedMessageIds.has(msg.id))
+
+  const resetBatchSelection = () => {
+    setSelectedConversationPhones(new Set())
+    setSelectedMessageIds(new Set())
+  }
+
+  const handleEnterBatchMode = () => {
+    setBatchMode(true)
+  }
+
+  const handleExitBatchMode = () => {
+    setBatchMode(false)
+    resetBatchSelection()
+  }
+
   const handleSelectConversation = (phone: string) => {
     setSelectedConversation(phone)
     setPhoneNumber(phone)
     void fetchConversation(phone)
   }
 
-  // 返回对话列表
   const handleBackToList = () => {
     setSelectedConversation(null)
     setConversationMessages([])
   }
 
-  // 开始新对话
   const handleStartNewChat = () => {
     if (!newChatNumber.trim()) {
       setError('请输入电话号码')
@@ -200,7 +271,6 @@ export default function SMSPage() {
     setNewChatNumber('')
   }
 
-  // 发送短信
   const handleSend = async () => {
     if (!phoneNumber.trim()) {
       setError('请输入电话号码')
@@ -237,29 +307,204 @@ export default function SMSPage() {
     }
   }
 
-  // 清空所有短信
-  const handleClearAll = async () => {
-    setError(null)
-    setSuccess(null)
-    setClearDialogOpen(false)
-
-    try {
-      const response = await api.clearAllSms()
-      if (response.status === 'ok') {
-        setSuccess('所有短信已清空')
-        setMessages([])
-        setConversations([])
-        setSelectedConversation(null)
-        void fetchStats()
+  const toggleConversationSelection = (phone: string) => {
+    const selected = selectedConversationPhones.has(phone)
+    setSelectedConversationPhones((prev) => {
+      const next = new Set(prev)
+      if (selected) {
+        next.delete(phone)
       } else {
-        setError(response.message)
+        next.add(phone)
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      return next
+    })
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev)
+      messageById.forEach((msg) => {
+        if (msg.phone_number === phone) {
+          next.delete(msg.id)
+        }
+      })
+      return next
+    })
+  }
+
+  const toggleAllConversations = () => {
+    if (allConversationsSelected) {
+      resetBatchSelection()
+      return
+    }
+    setSelectedConversationPhones(new Set(conversations.map((conv) => conv.phoneNumber)))
+    setSelectedMessageIds(new Set())
+  }
+
+  const toggleMessageSelection = (msg: SmsMessage) => {
+    if (selectedConversationPhones.has(msg.phone_number)) {
+      const relatedMessages = Array.from(messageById.values()).filter(
+        (item) => item.phone_number === msg.phone_number,
+      )
+      setSelectedConversationPhones((prev) => {
+        const next = new Set(prev)
+        next.delete(msg.phone_number)
+        return next
+      })
+      setSelectedMessageIds((prev) => {
+        const next = new Set(prev)
+        relatedMessages.forEach((item) => {
+          if (item.id !== msg.id) {
+            next.add(item.id)
+          }
+        })
+        next.delete(msg.id)
+        return next
+      })
+      return
+    }
+
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(msg.id)) {
+        next.delete(msg.id)
+      } else {
+        next.add(msg.id)
+      }
+      return next
+    })
+  }
+
+  const toggleAllCurrentMessages = () => {
+    if (!selectedConversation) {
+      return
+    }
+
+    if (currentMessagesAllSelected) {
+      setSelectedConversationPhones((prev) => {
+        const next = new Set(prev)
+        next.delete(selectedConversation)
+        return next
+      })
+      setSelectedMessageIds((prev) => {
+        const next = new Set(prev)
+        conversationMessages.forEach((msg) => next.delete(msg.id))
+        return next
+      })
+      return
+    }
+
+    setSelectedConversationPhones((prev) => {
+      const next = new Set(prev)
+      next.delete(selectedConversation)
+      return next
+    })
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev)
+      conversationMessages.forEach((msg) => next.add(msg.id))
+      return next
+    })
+  }
+
+  const isMessageSelected = (msg: SmsMessage) => (
+    selectedConversationPhones.has(msg.phone_number) || selectedMessageIds.has(msg.id)
+  )
+
+  const getConversationMessageSelectionState = (conv: ConversationGroup) => {
+    if (selectedConversationPhones.has(conv.phoneNumber)) {
+      return { checked: true, indeterminate: false }
+    }
+
+    const selectedCount = conv.messages.filter((msg) => selectedMessageIds.has(msg.id)).length
+    return {
+      checked: selectedCount > 0 && selectedCount === conv.messages.length,
+      indeterminate: selectedCount > 0 && selectedCount < conv.messages.length,
     }
   }
 
-  // 格式化时间
+  const requestConversationDelete = (
+    event: MouseEvent<HTMLButtonElement>,
+    conv: ConversationGroup,
+  ) => {
+    event.stopPropagation()
+    setDeleteTarget({
+      type: 'conversation',
+      phoneNumber: conv.phoneNumber,
+      messageCount: conv.messages.length,
+    })
+  }
+
+  const requestMessageDelete = (
+    event: MouseEvent<HTMLButtonElement>,
+    message: SmsMessage,
+  ) => {
+    event.stopPropagation()
+    setDeleteTarget({ type: 'message', message })
+  }
+
+  const refreshAfterDelete = (clearConversation: boolean) => {
+    void fetchMessages()
+    void fetchStats()
+    if (clearConversation) {
+      setSelectedConversation(null)
+      setConversationMessages([])
+      return
+    }
+    if (selectedConversation) {
+      void fetchConversation(selectedConversation)
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) {
+      return
+    }
+
+    setDeleteLoading(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      let deleted = 0
+      let clearCurrentConversation = false
+
+      if (deleteTarget.type === 'batch') {
+        const response = await api.deleteSmsBatch({
+          ids: batchSelection.ids,
+          phone_numbers: batchSelection.phoneNumbers,
+        })
+        deleted = response.data?.deleted ?? batchSelection.messageCount
+        clearCurrentConversation = Boolean(
+          selectedConversation
+          && (
+            batchSelection.phoneNumbers.includes(selectedConversation)
+            || (
+              conversationMessages.length > 0
+              && conversationMessages.every((msg) => batchSelection.ids.includes(msg.id))
+            )
+          ),
+        )
+        setSuccess(`已删除 ${deleted} 条短信`)
+        handleExitBatchMode()
+      } else if (deleteTarget.type === 'conversation') {
+        const response = await api.deleteSmsConversation(deleteTarget.phoneNumber)
+        deleted = response.data?.deleted ?? deleteTarget.messageCount
+        clearCurrentConversation = selectedConversation === deleteTarget.phoneNumber
+        setSuccess(`已删除对话 ${deleteTarget.phoneNumber}（${deleted} 条短信）`)
+      } else {
+        const response = await api.deleteSmsMessage(deleteTarget.message.id)
+        deleted = response.data?.deleted ?? 1
+        clearCurrentConversation = selectedConversation === deleteTarget.message.phone_number
+          && conversationMessages.length <= 1
+        setSuccess(deleted > 0 ? '短信已删除' : '短信不存在或已被删除')
+      }
+
+      setDeleteTarget(null)
+      refreshAfterDelete(clearCurrentConversation)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
   const formatTime = (timestamp: string) => {
     try {
       const date = new Date(timestamp)
@@ -274,7 +519,6 @@ export default function SMSPage() {
     }
   }
 
-  // 格式化简短时间
   const formatShortTime = (timestamp: string) => {
     try {
       const date = new Date(timestamp)
@@ -289,96 +533,209 @@ export default function SMSPage() {
     }
   }
 
-  // 对话列表 JSX
+  const deleteDialogTitle = deleteTarget?.type === 'batch'
+    ? '确认批量删除'
+    : deleteTarget?.type === 'conversation'
+      ? '确认删除对话'
+      : '确认删除短信'
+
+  const deleteDialogContent = (() => {
+    if (!deleteTarget) {
+      return ''
+    }
+    if (deleteTarget.type === 'batch') {
+      return `${batchSelectionText}，确定要删除吗？此操作不可撤销。`
+    }
+    if (deleteTarget.type === 'conversation') {
+      return `确定要删除与 ${deleteTarget.phoneNumber} 的对话及全部 ${deleteTarget.messageCount} 条短信吗？此操作不可撤销。`
+    }
+    return '确定要删除当前短信内容吗？此操作不可撤销。'
+  })()
+
+  const renderBatchSelectionBar = () => (
+    batchMode && hasBatchSelection ? (
+      <Box
+        sx={{
+          mx: 2,
+          mb: 1,
+          p: 1,
+          borderRadius: 1,
+          bgcolor: 'action.hover',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 1,
+        }}
+      >
+        <Typography variant="body2" fontWeight={600}>
+          {batchSelectionText}
+        </Typography>
+        <Button
+          size="small"
+          color="error"
+          variant="contained"
+          startIcon={<Delete />}
+          onClick={() => setDeleteTarget({ type: 'batch' })}
+          disabled={deleteLoading}
+        >
+          删除
+        </Button>
+      </Box>
+    ) : null
+  )
+
   const conversationListContent = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* 统计信息 */}
-      {stats && (
-        <Box display="flex" gap={1} p={2} flexWrap="wrap">
-          <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
-            <Typography variant="h6" color="primary" fontWeight={600}>{stats.total}</Typography>
-            <Typography variant="caption" color="text.secondary">总计</Typography>
-          </Paper>
-          <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
-            <Typography variant="h6" color="success.main" fontWeight={600}>{stats.incoming}</Typography>
-            <Typography variant="caption" color="text.secondary">接收</Typography>
-          </Paper>
-          <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
-            <Typography variant="h6" color="info.main" fontWeight={600}>{stats.outgoing}</Typography>
-            <Typography variant="caption" color="text.secondary">发送</Typography>
-          </Paper>
-        </Box>
-      )}
+      <Box display="flex" gap={1} p={2} flexWrap="wrap">
+        <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
+          <Typography variant="h6" color="primary" fontWeight={600}>{smsStats.total}</Typography>
+          <Typography variant="caption" color="text.secondary">总计</Typography>
+        </Paper>
+        <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
+          <Typography variant="h6" color="success.main" fontWeight={600}>{smsStats.incoming}</Typography>
+          <Typography variant="caption" color="text.secondary">接收</Typography>
+        </Paper>
+        <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
+          <Typography variant="h6" color="info.main" fontWeight={600}>{smsStats.outgoing}</Typography>
+          <Typography variant="caption" color="text.secondary">发送</Typography>
+        </Paper>
+      </Box>
 
-      {/* 操作栏 */}
-      <Box display="flex" justifyContent="space-between" alignItems="center" px={2} pb={1}>
+      <Box display="flex" justifyContent="space-between" alignItems="center" px={2} pb={1} gap={1}>
         <Typography variant="subtitle1" fontWeight={600}>
           对话 ({conversations.length})
         </Typography>
-        <Box display="flex" gap={0.5}>
-          <IconButton size="small" color="primary" onClick={() => setNewChatDialogOpen(true)}>
-            <Add />
-          </IconButton>
-          <IconButton size="small" color="primary" onClick={() => void fetchMessages()} disabled={loading}>
-            <Refresh />
-          </IconButton>
-          {conversations.length > 0 && (
-            <IconButton size="small" color="error" onClick={() => setClearDialogOpen(true)}>
-              <DeleteSweep />
-            </IconButton>
+        <Box display="flex" gap={0.5} alignItems="center">
+          {batchMode ? (
+            <>
+              <Button
+                size="small"
+                startIcon={<SelectAll />}
+                onClick={toggleAllConversations}
+                disabled={conversations.length === 0}
+              >
+                {allConversationsSelected ? '取消全选' : '全选对话'}
+              </Button>
+              <Tooltip title="退出批量管理">
+                <IconButton size="small" onClick={handleExitBatchMode}>
+                  <Close />
+                </IconButton>
+              </Tooltip>
+            </>
+          ) : (
+            <>
+              <Tooltip title="新建对话">
+                <IconButton size="small" color="primary" onClick={() => setNewChatDialogOpen(true)}>
+                  <Add />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="刷新">
+                <IconButton size="small" color="primary" onClick={() => void fetchMessages()} disabled={loading}>
+                  <Refresh />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="批量管理">
+                <IconButton size="small" color="primary" onClick={handleEnterBatchMode}>
+                  <Checklist />
+                </IconButton>
+              </Tooltip>
+            </>
           )}
         </Box>
       </Box>
 
+      {renderBatchSelectionBar()}
+
       <Divider />
 
-      {/* 对话列表 */}
       {loading && conversations.length === 0 ? (
         <Box display="flex" justifyContent="center" py={4}><CircularProgress /></Box>
       ) : conversations.length === 0 ? (
         <Box p={2}><Alert severity="info">暂无对话，点击 + 开始新对话</Alert></Box>
       ) : (
         <List sx={{ flex: 1, overflow: 'auto' }}>
-          {conversations.map((conv, idx) => (
-            <Box key={conv.phoneNumber}>
-              <ListItemButton 
-                onClick={() => handleSelectConversation(conv.phoneNumber)}
-                selected={selectedConversation === conv.phoneNumber}
+          {conversations.map((conv, idx) => {
+            const selectionState = getConversationMessageSelectionState(conv)
+            return (
+              <Box
+                key={conv.phoneNumber}
+                sx={{
+                  '&:hover .conversation-delete, &:focus-within .conversation-delete': {
+                    opacity: 1,
+                  },
+                }}
               >
-                <Avatar sx={{ mr: 2, bgcolor: 'primary.light' }}><Person /></Avatar>
-                <ListItemText
-                  primary={
-                    <Box display="flex" alignItems="center" gap={1}>
-                      <Typography fontWeight={600}>{conv.phoneNumber}</Typography>
-                      <Badge badgeContent={conv.messages.length} color="primary" max={99} />
-                    </Box>
-                  }
-                  secondary={
-                    <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 180 }}>
-                      {conv.lastMessage.direction === 'outgoing' ? '你: ' : ''}{conv.lastMessage.content}
-                    </Typography>
-                  }
-                />
-                <Typography variant="caption" color="text.secondary">
-                  {formatShortTime(conv.lastMessage.timestamp)}
-                </Typography>
-              </ListItemButton>
-              {idx < conversations.length - 1 && <Divider />}
-            </Box>
-          ))}
+                <ListItemButton
+                  onClick={() => handleSelectConversation(conv.phoneNumber)}
+                  selected={selectedConversation === conv.phoneNumber}
+                  sx={{ gap: 1 }}
+                >
+                  {batchMode && (
+                    <Checkbox
+                      edge="start"
+                      size="small"
+                      checked={selectionState.checked}
+                      indeterminate={selectionState.indeterminate}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={() => toggleConversationSelection(conv.phoneNumber)}
+                      inputProps={{ 'aria-label': `选择对话 ${conv.phoneNumber}` }}
+                    />
+                  )}
+                  <Avatar sx={{ bgcolor: 'primary.light' }}><Person /></Avatar>
+                  <ListItemText
+                    primary={
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <Typography fontWeight={600}>{conv.phoneNumber}</Typography>
+                        <Badge badgeContent={conv.messages.length} color="primary" max={99} />
+                      </Box>
+                    }
+                    secondary={
+                      <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 180 }}>
+                        {conv.lastMessage.direction === 'outgoing' ? '你: ' : ''}{conv.lastMessage.content}
+                      </Typography>
+                    }
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 44, textAlign: 'right' }}>
+                    {formatShortTime(conv.lastMessage.timestamp)}
+                  </Typography>
+                  {!batchMode && (
+                    <Tooltip title="删除对话">
+                      <IconButton
+                        className="conversation-delete"
+                        size="small"
+                        onClick={(event) => requestConversationDelete(event, conv)}
+                        sx={{
+                          opacity: 0,
+                          color: 'text.secondary',
+                          transition: (theme: Theme) => theme.transitions.create(['opacity', 'color'], {
+                            duration: theme.transitions.duration.shortest,
+                          }),
+                          '&:hover': {
+                            color: 'error.main',
+                            bgcolor: 'rgba(211, 47, 47, 0.08)',
+                          },
+                        }}
+                      >
+                        <DeleteOutline fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </ListItemButton>
+                {idx < conversations.length - 1 && <Divider />}
+              </Box>
+            )
+          })}
         </List>
       )}
     </Box>
   )
 
-  // 聊天区域 JSX
   const chatAreaContent = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* 顶部：联系人信息 */}
-      <Box 
-        sx={{ 
-          p: 2, 
-          borderBottom: 1, 
+      <Box
+        sx={{
+          p: 2,
+          borderBottom: 1,
           borderColor: 'divider',
           display: 'flex',
           alignItems: 'center',
@@ -392,13 +749,26 @@ export default function SMSPage() {
         )}
         <Avatar sx={{ bgcolor: 'primary.main' }}><Person /></Avatar>
         <Typography variant="h6" fontWeight={600}>{selectedConversation}</Typography>
+        {batchMode && conversationMessages.length > 0 && (
+          <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center' }}>
+            <Checkbox
+              size="small"
+              checked={currentMessagesAllSelected}
+              indeterminate={currentMessagesSomeSelected && !currentMessagesAllSelected}
+              onChange={toggleAllCurrentMessages}
+              inputProps={{ 'aria-label': '全选当前对话短信' }}
+            />
+            <Typography variant="body2" color="text.secondary">全选短信</Typography>
+          </Box>
+        )}
       </Box>
 
-      {/* 中部：消息气泡 */}
-      <Box 
-        sx={{ 
-          flex: 1, 
-          overflow: 'auto', 
+      {isMobile && renderBatchSelectionBar()}
+
+      <Box
+        sx={{
+          flex: 1,
+          overflow: 'auto',
           p: 2,
           bgcolor: (theme: Theme) => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50',
         }}
@@ -416,18 +786,36 @@ export default function SMSPage() {
                 key={msg.id || idx}
                 display="flex"
                 justifyContent={msg.direction === 'outgoing' ? 'flex-end' : 'flex-start'}
+                alignItems="center"
+                gap={0.75}
                 mb={1.5}
+                onClick={batchMode ? () => toggleMessageSelection(msg) : undefined}
+                sx={{
+                  cursor: batchMode ? 'pointer' : 'default',
+                  '&:hover .message-delete, &:focus-within .message-delete': {
+                    opacity: 1,
+                  },
+                }}
               >
+                {batchMode && (
+                  <Checkbox
+                    size="small"
+                    checked={isMessageSelected(msg)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={() => toggleMessageSelection(msg)}
+                    inputProps={{ 'aria-label': '选择短信' }}
+                  />
+                )}
                 <Paper
                   elevation={1}
                   sx={{
                     p: 1.5,
                     maxWidth: '75%',
-                    bgcolor: msg.direction === 'outgoing' 
-                      ? 'primary.main' 
+                    bgcolor: msg.direction === 'outgoing'
+                      ? 'primary.main'
                       : (theme: Theme) => theme.palette.mode === 'dark' ? 'grey.800' : 'white',
-                    color: msg.direction === 'outgoing' 
-                      ? 'white' 
+                    color: msg.direction === 'outgoing'
+                      ? 'white'
                       : 'text.primary',
                     borderRadius: 2,
                     borderTopRightRadius: msg.direction === 'outgoing' ? 0 : 16,
@@ -438,8 +826,8 @@ export default function SMSPage() {
                     {msg.content}
                   </Typography>
                   <Box display="flex" alignItems="center" justifyContent="flex-end" gap={0.5} mt={0.5}>
-                    <Typography 
-                      variant="caption" 
+                    <Typography
+                      variant="caption"
                       sx={{ opacity: 0.7 }}
                     >
                       {formatTime(msg.timestamp)}
@@ -453,6 +841,28 @@ export default function SMSPage() {
                     )}
                   </Box>
                 </Paper>
+                {!batchMode && (
+                  <Tooltip title="删除短信">
+                    <IconButton
+                      className="message-delete"
+                      size="small"
+                      onClick={(event) => requestMessageDelete(event, msg)}
+                      sx={{
+                        opacity: 0,
+                        color: 'text.secondary',
+                        transition: (theme: Theme) => theme.transitions.create(['opacity', 'color'], {
+                          duration: theme.transitions.duration.shortest,
+                        }),
+                        '&:hover': {
+                          color: 'error.main',
+                          bgcolor: 'rgba(211, 47, 47, 0.08)',
+                        },
+                      }}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </Box>
             ))}
             <div ref={chatEndRef} />
@@ -460,11 +870,10 @@ export default function SMSPage() {
         )}
       </Box>
 
-      {/* 底部：固定输入框 */}
-      <Box 
-        sx={{ 
-          p: 2, 
-          borderTop: 1, 
+      <Box
+        sx={{
+          p: 2,
+          borderTop: 1,
           borderColor: 'divider',
           bgcolor: 'background.paper',
         }}
@@ -508,7 +917,6 @@ export default function SMSPage() {
     </Box>
   )
 
-  // 空状态提示 JSX
   const emptyStateContent = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', p: 4 }}>
       <SmsIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
@@ -530,7 +938,6 @@ export default function SMSPage() {
         </Typography>
       </Box>
 
-      {/* 错误和成功提示 */}
       <Snackbar open={!!error} autoHideDuration={4000} resumeHideDuration={3000} onClose={() => setError(null)} anchorOrigin={{ vertical: 'top', horizontal: 'center' }}>
         <Alert severity="error" onClose={() => setError(null)} variant="filled">{error}</Alert>
       </Snackbar>
@@ -538,27 +945,22 @@ export default function SMSPage() {
         <Alert severity="success" onClose={() => setSuccess(null)} variant="filled">{success}</Alert>
       </Snackbar>
 
-      {/* 主内容区域 */}
       <Card sx={{ height: 'calc(100% - 48px)' }}>
         <CardContent sx={{ height: '100%', p: 0, '&:last-child': { pb: 0 } }}>
           {isMobile ? (
-            // 移动端：对话列表或聊天详情
             selectedConversation ? chatAreaContent : conversationListContent
           ) : (
-            // PC端：左右分栏
             <Box display="flex" height="100%">
-              {/* 左侧：对话列表 */}
-              <Box 
-                sx={{ 
-                  width: 320, 
-                  borderRight: 1, 
+              <Box
+                sx={{
+                  width: 340,
+                  borderRight: 1,
                   borderColor: 'divider',
                   flexShrink: 0,
                 }}
               >
                 {conversationListContent}
               </Box>
-              {/* 右侧：聊天区域 */}
               <Box sx={{ flex: 1 }}>
                 {selectedConversation ? chatAreaContent : emptyStateContent}
               </Box>
@@ -567,19 +969,24 @@ export default function SMSPage() {
         </CardContent>
       </Card>
 
-      {/* 清空确认对话框 */}
-      <Dialog open={clearDialogOpen} onClose={() => setClearDialogOpen(false)}>
-        <DialogTitle>确认清空</DialogTitle>
+      <Dialog open={!!deleteTarget} onClose={() => !deleteLoading && setDeleteTarget(null)}>
+        <DialogTitle>{deleteDialogTitle}</DialogTitle>
         <DialogContent>
-          <Typography>确定要清空所有短信记录吗？此操作不可撤销。</Typography>
+          <Typography>{deleteDialogContent}</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setClearDialogOpen(false)}>取消</Button>
-          <Button onClick={() => void handleClearAll()} color="error" variant="contained">确认清空</Button>
+          <Button onClick={() => setDeleteTarget(null)} disabled={deleteLoading}>取消</Button>
+          <Button
+            onClick={() => void handleConfirmDelete()}
+            color="error"
+            variant="contained"
+            disabled={deleteLoading || (deleteTarget?.type === 'batch' && !hasBatchSelection)}
+          >
+            {deleteLoading ? '删除中...' : '确认删除'}
+          </Button>
         </DialogActions>
       </Dialog>
 
-      {/* 新对话对话框 */}
       <Dialog open={newChatDialogOpen} onClose={() => setNewChatDialogOpen(false)}>
         <DialogTitle>新建对话</DialogTitle>
         <DialogContent>

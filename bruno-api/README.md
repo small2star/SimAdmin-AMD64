@@ -107,10 +107,10 @@
 - **delete_call_history.bru** - 删除单条通话记录
 - **clear_call_history.bru** - 清空所有通话记录
 
-### Webhook 配置接口
-- **get_webhook_config.bru** - 获取 Webhook 配置
-- **set_webhook_config.bru** - 设置 Webhook 配置
-- **test_webhook.bru** - 测试 Webhook 连接
+### 通知配置接口
+- **get_notification_config.bru** - 获取多渠道通知配置
+- **set_notification_config.bru** - 设置多渠道通知配置
+- **test_notification_channel.bru** - 测试指定通知渠道，可通过 `channel` 变量切换
 
 ## 使用方法
 
@@ -186,9 +186,9 @@
 | GET | `/api/call/history` | 获取通话记录列表 |
 | DELETE | `/api/call/history/:id` | 删除单条通话记录 |
 | POST | `/api/call/history/clear` | 清空所有通话记录 |
-| GET | `/api/webhook/config` | 获取 Webhook 配置 |
-| POST | `/api/webhook/config` | 设置 Webhook 配置 |
-| POST | `/api/webhook/test` | 测试 Webhook 连接 |
+| GET | `/api/notifications/config` | 获取多渠道通知配置 |
+| POST | `/api/notifications/config` | 设置多渠道通知配置 |
+| POST | `/api/notifications/test/:channel` | 测试指定通知渠道 |
 
 ## USB 模式说明
 
@@ -308,4 +308,3 @@
 ## 更多信息
 
 查看项目主 README 了解更多详情。
-

@@ -605,6 +605,14 @@ pub struct SmsConversationRequest {
     pub limit: i64,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct SmsBatchDeleteRequest {
+    #[serde(default)]
+    pub ids: Vec<i64>,
+    #[serde(default)]
+    pub phone_numbers: Vec<String>,
+}
+
 fn default_page_size() -> i64 {
     50
 }

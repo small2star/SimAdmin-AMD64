@@ -850,6 +850,70 @@ pub async fn clear_sms_handler(
     }
 }
 
+/// DELETE /api/sms/message/{id}
+pub async fn delete_sms_message_handler(
+    State(db): State<Arc<Database>>,
+    Path(id): Path<i64>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    match db.delete_sms(id) {
+        Ok(deleted) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                "SMS deleted",
+                json!({ "deleted": deleted }),
+            )),
+        ),
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed: {}", e))),
+        ),
+    }
+}
+
+/// DELETE /api/sms/conversation/{phone_number}
+pub async fn delete_sms_conversation_handler(
+    State(db): State<Arc<Database>>,
+    Path(phone_number): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    match db.delete_sms_conversation(&phone_number) {
+        Ok(deleted) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                "SMS conversation deleted",
+                json!({ "deleted": deleted }),
+            )),
+        ),
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed: {}", e))),
+        ),
+    }
+}
+
+/// POST /api/sms/batch-delete
+pub async fn delete_sms_batch_handler(
+    State(db): State<Arc<Database>>,
+    Json(payload): Json<SmsBatchDeleteRequest>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    if payload.ids.is_empty() && payload.phone_numbers.is_empty() {
+        return (StatusCode::OK, Json(ApiResponse::error("No SMS selected")));
+    }
+
+    match db.delete_sms_batch(&payload.ids, &payload.phone_numbers) {
+        Ok(deleted) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                "SMS batch deleted",
+                json!({ "deleted": deleted }),
+            )),
+        ),
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed: {}", e))),
+        ),
+    }
+}
+
 // ============ 系统信息 ============
 
 /// 读取温度传感器数据
@@ -1271,8 +1335,6 @@ fn read_temperature_sensors() -> Vec<ThermalZone> {
 /// GET /api/stats
 pub async fn get_system_stats() -> impl IntoResponse {
     let result: Result<SystemStatsResponse, String> = async {
-        let cpu_usage = sample_cpu_usage().await.unwrap_or(0.0);
-
         let interfaces =
             get_active_interfaces().map_err(|e| format!("Failed to get interfaces: {}", e))?;
 
@@ -1283,7 +1345,11 @@ pub async fn get_system_stats() -> impl IntoResponse {
             }
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        // 并行执行 CPU 采样 (200ms) 和网速采样间隔 (1000ms)，节省 200ms
+        let (cpu_usage, _) = tokio::join!(
+            async { sample_cpu_usage().await.unwrap_or(0.0) },
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)),
+        );
 
         let mut speed_data = Vec::new();
         let elapsed = 1.0_f64;
@@ -1371,8 +1437,11 @@ pub async fn get_cpu_info() -> impl IntoResponse {
 /// GET /api/connectivity
 pub async fn get_connectivity_check() -> (StatusCode, Json<ApiResponse<ConnectivityCheckResponse>>)
 {
-    let ipv4_result = ping_host("223.5.5.5", false);
-    let ipv6_result = ping_host("2400:3200::1", true);
+    // 两个 ping 并行执行，超时从 2s 缩短到 1s
+    let (ipv4_result, ipv6_result) = tokio::join!(
+        async_ping_host("223.5.5.5", false),
+        async_ping_host("2400:3200::1", true),
+    );
     (
         StatusCode::OK,
         Json(ApiResponse::success_with_message(
@@ -1385,11 +1454,12 @@ pub async fn get_connectivity_check() -> (StatusCode, Json<ApiResponse<Connectiv
     )
 }
 
-fn ping_host(target: &str, is_ipv6: bool) -> PingResult {
+async fn async_ping_host(target: &str, is_ipv6: bool) -> PingResult {
     let cmd = if is_ipv6 { "ping6" } else { "ping" };
-    let output = Command::new(cmd)
-        .args(["-c", "1", "-W", "2", target])
-        .output();
+    let output = tokio::process::Command::new(cmd)
+        .args(["-c", "1", "-W", "1", target])
+        .output()
+        .await;
     match output {
         Ok(result) => {
             if result.status.success() {
@@ -1591,27 +1661,30 @@ pub async fn restart_service_handler() -> impl IntoResponse {
 use crate::config::ConfigManager;
 use crate::webhook::WebhookSender;
 
-/// GET /api/webhook/config
-pub async fn get_webhook_config_handler(
+/// GET /api/notifications/config
+pub async fn get_notification_config_handler(
     State(config_manager): State<Arc<ConfigManager>>,
-) -> (StatusCode, Json<ApiResponse<crate::config::WebhookConfig>>) {
-    let config = config_manager.get_webhook();
+) -> (
+    StatusCode,
+    Json<ApiResponse<crate::config::NotificationConfig>>,
+) {
+    let config = config_manager.get_notifications();
     (
         StatusCode::OK,
         Json(ApiResponse::success_with_message("Success", config)),
     )
 }
 
-/// POST /api/webhook/config
-pub async fn set_webhook_config_handler(
+/// POST /api/notifications/config
+pub async fn set_notification_config_handler(
     State(config_manager): State<Arc<ConfigManager>>,
-    Json(webhook_config): Json<crate::config::WebhookConfig>,
+    Json(notification_config): Json<crate::config::NotificationConfig>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match config_manager.set_webhook(webhook_config) {
+    match config_manager.set_notifications(notification_config) {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(
-                "Webhook config updated",
+                "Notification config updated",
                 json!({}),
             )),
         ),
@@ -1622,18 +1695,19 @@ pub async fn set_webhook_config_handler(
     }
 }
 
-/// POST /api/webhook/test
-pub async fn test_webhook_handler(
+/// POST /api/notifications/test/{channel}
+pub async fn test_notification_channel_handler(
+    Path(channel): Path<crate::config::NotificationChannel>,
     State(webhook_sender): State<Arc<WebhookSender>>,
 ) -> (
     StatusCode,
     Json<ApiResponse<crate::models::WebhookTestResponse>>,
 ) {
-    match webhook_sender.test_webhook().await {
+    match webhook_sender.test_channel(channel).await {
         Ok(message) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(
-                "Webhook test successful",
+                "Notification test successful",
                 WebhookTestResponse {
                     success: true,
                     message,
@@ -1643,7 +1717,7 @@ pub async fn test_webhook_handler(
         Err(e) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(
-                "Webhook test failed",
+                "Notification test failed",
                 WebhookTestResponse {
                     success: false,
                     message: e,

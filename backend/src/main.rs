@@ -418,6 +418,18 @@ async fn main() -> Result<()> {
             get(get_sms_stats_handler).options(options_handler),
         )
         .route(
+            "/api/sms/batch-delete",
+            post(delete_sms_batch_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/conversation/{phone_number}",
+            axum::routing::delete(delete_sms_conversation_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/message/{id}",
+            axum::routing::delete(delete_sms_message_handler).options(options_handler),
+        )
+        .route(
             "/api/sms/clear",
             post(clear_sms_handler).options(options_handler),
         )
@@ -437,16 +449,16 @@ async fn main() -> Result<()> {
             post(restart_service_handler).options(options_handler),
         )
         .route("/api/health", get(health_check))
-        // ========== Webhook 配置接口 ==========
+        // ========== 通知配置接口 ==========
         .route(
-            "/api/webhook/config",
-            get(get_webhook_config_handler)
-                .post(set_webhook_config_handler)
+            "/api/notifications/config",
+            get(get_notification_config_handler)
+                .post(set_notification_config_handler)
                 .options(options_handler),
         )
         .route(
-            "/api/webhook/test",
-            post(test_webhook_handler).options(options_handler),
+            "/api/notifications/test/{channel}",
+            post(test_notification_channel_handler).options(options_handler),
         )
         // ========== OTA 更新接口 ==========
         .route(

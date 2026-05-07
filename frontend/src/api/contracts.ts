@@ -423,6 +423,93 @@ export interface WebhookConfig {
   call_template: string
 }
 
+export type NotificationChannelKey =
+  | 'webhook'
+  | 'bark'
+  | 'wecom_app'
+  | 'wecom_robot'
+  | 'dingtalk_robot'
+  | 'dingtalk_app'
+  | 'feishu_robot'
+  | 'telegram'
+
+export interface MessageChannelConfig {
+  enabled: boolean
+  forward_sms: boolean
+  forward_calls: boolean
+  sms_template: string
+  call_template: string
+}
+
+export interface BarkConfig extends MessageChannelConfig {
+  server_url: string
+  device_key: string
+  title_template: string
+  group: string
+  sound: string
+  level: string
+  icon: string
+  click_url: string
+  copy: string
+  auto_copy: boolean
+  save_history: boolean
+}
+
+export interface WecomAppConfig extends MessageChannelConfig {
+  corp_id: string
+  agent_id: string
+  secret: string
+  to_user: string
+  to_party: string
+  to_tag: string
+  safe: boolean
+}
+
+export interface WecomRobotConfig extends MessageChannelConfig {
+  webhook_url: string
+  key: string
+}
+
+export interface DingtalkRobotConfig extends MessageChannelConfig {
+  webhook_url: string
+  access_token: string
+  secret: string
+  at_mobiles: string
+  at_all: boolean
+}
+
+export interface DingtalkAppConfig extends MessageChannelConfig {
+  app_key: string
+  app_secret: string
+  robot_code: string
+  open_conversation_id: string
+  msg_key: string
+}
+
+export interface FeishuRobotConfig extends MessageChannelConfig {
+  webhook_url: string
+  token: string
+  secret: string
+}
+
+export interface TelegramConfig extends MessageChannelConfig {
+  bot_token: string
+  chat_id: string
+  parse_mode: string
+  disable_web_page_preview: boolean
+}
+
+export interface NotificationConfig {
+  webhook: WebhookConfig
+  bark: BarkConfig
+  wecom_app: WecomAppConfig
+  wecom_robot: WecomRobotConfig
+  dingtalk_robot: DingtalkRobotConfig
+  dingtalk_app: DingtalkAppConfig
+  feishu_robot: FeishuRobotConfig
+  telegram: TelegramConfig
+}
+
 export const DEFAULT_SMS_TEMPLATE = `{
   "msg_type": "text",
   "content": {
@@ -436,6 +523,18 @@ export const DEFAULT_CALL_TEMPLATE = `{
     "text": "📞 来电通知\\n号码: {{phone_number}}\\n类型: {{direction}}\\n时间: {{start_time}}\\n时长: {{duration}}秒\\n已接听: {{answered}}"
   }
 }`
+
+export const DEFAULT_PLAIN_SMS_TEMPLATE = `📱 短信通知
+发送方: {{phone_number}}
+内容: {{content}}
+时间: {{timestamp}}`
+
+export const DEFAULT_PLAIN_CALL_TEMPLATE = `📞 来电通知
+号码: {{phone_number}}
+类型: {{direction}}
+时间: {{start_time}}
+时长: {{duration}}秒
+已接听: {{answered}}`
 
 export interface WebhookTestResponse {
   success: boolean

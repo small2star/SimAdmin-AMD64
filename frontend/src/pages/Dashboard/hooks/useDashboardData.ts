@@ -158,43 +158,54 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
     }
 
     try {
-      const [
-        deviceRes,
-        simRes,
-        statsRes,
-        networkRes,
-        dataRes,
-        airplaneModeRes,
-        connectivityRes,
-        interfacesRes,
-        roamingRes,
-        cellsRes,
-      ] = await Promise.all([
+      // 快速请求：决定 initialLoading，通常 <200ms 即可全部返回
+      const fastPromise = Promise.all([
         requestOrNull(api.getDeviceInfo(), 'device'),
         requestOrNull(api.getSimInfo(), 'sim'),
-        requestOrNull(api.getSystemStats(), 'stats'),
         requestOrNull(api.getNetworkInfo(), 'network'),
         requestOrNull(api.getDataStatus(), 'data'),
         requestOrNull(api.getAirplaneMode(), 'airplane-mode'),
-        requestOrNull(api.getConnectivity(), 'connectivity'),
         requestOrNull(api.getNetworkInterfaces(), 'interfaces'),
         requestOrNull(api.getRoamingStatus(), 'roaming'),
         requestOrNull(api.getCellsInfo(), 'cells'),
       ])
 
+      // 慢速请求：不阻塞页面渲染，异步填充数据
+      const statsPromise = requestOrNull(api.getSystemStats(), 'stats')
+      const connectivityPromise = requestOrNull(api.getConnectivity(), 'connectivity')
+
+      // 等待快速请求完成即可渲染页面
+      const [
+        deviceRes,
+        simRes,
+        networkRes,
+        dataRes,
+        airplaneModeRes,
+        interfacesRes,
+        roamingRes,
+        cellsRes,
+      ] = await fastPromise
+
       if (deviceRes?.data) setDeviceInfo(deviceRes.data)
       if (simRes?.data) setSimInfo(simRes.data)
+      if (networkRes?.data) setNetworkInfo(networkRes.data)
+      if (dataRes?.data) setDataStatus(dataRes.data.active)
+      if (airplaneModeRes?.data) setAirplaneMode(airplaneModeRes.data)
+      if (interfacesRes?.data) setConnectionAddresses(connectionAddressesFromInterfaces(interfacesRes.data.interfaces))
+      if (roamingRes?.data) setRoaming(roamingRes.data)
+      if (cellsRes?.data) setCellsInfo(cellsRes.data)
+
+      // 快速数据就绪，立即解除 loading
+      setInitialLoading(false)
+
+      // 异步等待慢速请求并填充数据
+      const [statsRes, connectivityRes] = await Promise.all([statsPromise, connectivityPromise])
+
       if (statsRes?.data) {
         setSystemStats(statsRes.data)
         updateSpeedHistory(statsRes.data)
       }
-      if (networkRes?.data) setNetworkInfo(networkRes.data)
-      if (dataRes?.data) setDataStatus(dataRes.data.active)
-      if (airplaneModeRes?.data) setAirplaneMode(airplaneModeRes.data)
       if (connectivityRes?.data) setConnectivity(connectivityRes.data)
-      if (interfacesRes?.data) setConnectionAddresses(connectionAddressesFromInterfaces(interfacesRes.data.interfaces))
-      if (roamingRes?.data) setRoaming(roamingRes.data)
-      if (cellsRes?.data) setCellsInfo(cellsRes.data)
 
       const dataActive = dataRes?.data?.active ?? false
       if (statsRes?.data) {
@@ -207,7 +218,6 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
-    } finally {
       setInitialLoading(false)
     }
   }, [updateSpeedHistory])
@@ -245,13 +255,23 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [roaming?.roaming_allowed])
+  }, [roaming])
 
   useEffect(() => {
-    void loadData()
+    const timeout = window.setTimeout(() => {
+      void loadData()
+    }, 0)
+
+    let interval: number | undefined
     if (refreshInterval > 0) {
-      const interval = setInterval(() => void loadData(), refreshInterval)
-      return () => clearInterval(interval)
+      interval = window.setInterval(() => void loadData(), refreshInterval)
+    }
+
+    return () => {
+      window.clearTimeout(timeout)
+      if (interval !== undefined) {
+        window.clearInterval(interval)
+      }
     }
   }, [refreshInterval, refreshKey, loadData])
 

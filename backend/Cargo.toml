@@ -1,6 +1,6 @@
 [package]
 name = "simadmin"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 
 [dependencies]
@@ -20,6 +20,9 @@ anyhow = "1.0"
 lazy_static = "1.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 md5 = "0.7"
+base64 = "0.22.1"
+percent-encoding = "2.3.2"
+ring = "0.17.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

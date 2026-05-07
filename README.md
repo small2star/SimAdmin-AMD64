@@ -48,12 +48,12 @@
 
 # SimAdmin - SIM/eSIM 中枢
 
-SimAdmin 是一套面向 Debian 蜂窝 CPE、随身 WiFi、软路由类设备的 SIM/eSIM、蜂窝网络、短信、通话和系统状态管理系统。
+SimAdmin 是一套面向 Debian 蜂窝 CPE、随身 WiFi、软路由类设备的 SIM/eSIM、蜂窝网络、短信和系统状态管理系统。
 
 当前项目由 Rust 后端和 React 前端组成：
 
 - 后端：Rust + Axum + zbus，主要通过 ModemManager D-Bus 接口管理 modem，并在部分场景使用 `mmcli`、`qmicli` 或 AT 直连兜底。
-- 前端：React + Vite + Material UI，提供仪表盘、设备信息、网络管理、短信、通话、通知配置和 OTA 更新页面。
+- 前端：React + Vite + Material UI，提供仪表盘、设备信息、网络管理、短信、通知配置和 OTA 更新页面。
 - 部署形态：后端二进制同进程托管前端 SPA，默认安装到 `/opt/simadmin`，通过 systemd 运行。
 
 健康检查整体按支持 ModemManager 的 Linux 蜂窝设备组织，不同 modem 固件、内核、ModemManager 版本暴露的能力不同，具体功能以实际设备为准。
@@ -68,7 +68,6 @@ SimAdmin 是一套面向 Debian 蜂窝 CPE、随身 WiFi、软路由类设备的
 
 - 频段锁定依赖 ModemManager 暴露的 `SupportedBands` / `CurrentBands` / `SetCurrentBands`。
 - 小区锁定当前为后端内存态展示，不会下发真实硬件锁小区命令。
-- 通话音量、呼叫转移、IMS、语音信箱在当前 ModemManager 后端中未暴露，相关接口会返回不支持。
 
 ## 开源协议声明
 
@@ -96,11 +95,12 @@ SimAdmin 是一套面向 Debian 蜂窝 CPE、随身 WiFi、软路由类设备的
 
 ```text
 .
-├── backend/          # Rust + Axum 后端，ModemManager、SQLite、OTA、Webhook、系统接口
+├── backend/          # Rust + Axum 后端，ModemManager、SQLite、OTA、通知、系统接口
 ├── frontend/         # React + Vite + MUI 前端
 ├── bruno-api/        # Bruno API 调试集合
 ├── scripts/          # 构建、部署、systemd、modem 恢复脚本
 ├── install_latest.sh # 设备侧一键安装 / 升级脚本
+├── uninstall.sh      # 设备侧一键卸载脚本
 ├── VERSION           # 项目版本号
 └── LICENSE           # GPLv3 许可证
 ```
@@ -201,6 +201,47 @@ curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/install_latest.s
 - 安装并启用 `simadmin-modem-recovery.service`。
 - 配置 NetworkManager 忽略 `wwan*` 接口，避免与 SimAdmin 抢占蜂窝连接管理。
 
+### 设备侧一键卸载
+
+默认彻底卸载，删除服务、程序文件、前端文件、OTA 临时目录、NetworkManager 配置以及用户数据：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/uninstall.sh | sh
+```
+
+如需保留短信数据库和配置文件：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/uninstall.sh \
+  | sh -s -- --keep-user-data
+```
+
+自定义安装路径或服务名时，需要和安装时保持一致：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/uninstall.sh \
+  | INSTALL_DIR=/opt/simadmin SERVICE_NAME=simadmin sh -s -- --keep-user-data
+```
+
+可选参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--purge` | 删除全部 SimAdmin 文件和用户数据，默认行为 |
+| `--keep-user-data` | 保留 `/opt/simadmin/data.db`、SQLite sidecar 文件和配置文件 |
+| `--install-dir PATH` | 指定安装目录，默认 `/opt/simadmin` |
+| `--service-name NAME` | 指定主服务名，默认 `simadmin` |
+
+脚本会：
+
+- 停止并禁用 `simadmin.service`。
+- 停止并禁用 `simadmin-modem-recovery.service`。
+- 删除 systemd 单元文件并执行 `daemon-reload` / `reset-failed`。
+- 删除 `/usr/local/bin/simadmin-modem-recovery.sh`。
+- 删除 `/etc/NetworkManager/conf.d/99-simadmin-unmanaged-modem.conf`，并在 NetworkManager 运行时重启它。
+- 删除 `/tmp/ota_staging`。
+- 默认删除 `/opt/simadmin` 和 `/data/config.json`；使用 `--keep-user-data` 时保留用户数据。
+
 ## 运行环境
 
 ### 目标设备要求
@@ -221,13 +262,15 @@ curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/install_latest.s
 |------|------|
 | `/opt/simadmin/simadmin` | 后端二进制 |
 | `/opt/simadmin/www/` | 前端静态文件 |
-| `/opt/simadmin/data.db` | SQLite 数据库，保存短信和通话记录 |
+| `/opt/simadmin/data.db` | SQLite 数据库，保存短信等业务数据 |
 | `/opt/simadmin/meta.json` | 当前安装包元数据 |
 | `/data/config.json` | 优先使用的持久化配置文件 |
 | `/opt/simadmin/config.json` | `/data` 不存在时的配置文件回退路径 |
 | `/tmp/ota_staging` | OTA 上传后的临时验证目录 |
 | `/etc/systemd/system/simadmin.service` | 主服务 |
 | `/etc/systemd/system/simadmin-modem-recovery.service` | 开机 modem 自检恢复服务 |
+| `/usr/local/bin/simadmin-modem-recovery.sh` | 开机 modem 自检恢复脚本 |
+| `/etc/NetworkManager/conf.d/99-simadmin-unmanaged-modem.conf` | NetworkManager 忽略 `wwan*` 的配置 |
 
 ### systemd 服务
 
@@ -255,7 +298,7 @@ journalctl -u simadmin -f
 | 设备信息 | `/device` | IMEI、厂商、型号、固件、SIM、系统信息 |
 | 网络管理 | `/network` | 网络注册、服务小区和邻区、运营商扫描、APN、射频模式、频段锁定、小区锁定状态 |
 | 短信管理 | `/sms` | 发送短信、短信列表、会话、统计、清空 |
-| 通知中心 | `/notifications` | Webhook 配置、短信和通话转发模板、测试发送 |
+| 通知中心 | `/notifications` | 多渠道通知配置、短信转发模板、测试发送 |
 | 系统配置 | `/config` | 设备操作、数据连接、漫游、飞行模式、基带重启、服务重启、系统重启等 |
 | OTA 更新 | `/ota` | 上传 OTA 包、在线获取 Release、验证、应用或取消更新 |
 
@@ -268,15 +311,69 @@ journalctl -u simadmin -f
 - 数据连接 watchdog，每 15 秒检查连接状态、iptables 规则和 modem 可用性。
 - ModemManager 丢失时触发 `mmcli --scan-modems`，连续失败后重启 ModemManager。
 - NetworkManager `wwan*` unmanaged 配置。
-- 短信发送、接收监听、SQLite 持久化和 Webhook 转发。
-- 通话拨号、接听、挂断、当前通话列表、通话记录。
+- 短信发送、接收监听、SQLite 持久化和多渠道通知转发。
 - APN 列表读取和 APN 修改。
 - 运营商列表、扫描、手动注册、自动注册。
 - OTA 上传、在线下载、校验、替换二进制和前端资源。
 
+## 🚀 版本更新记录
+
+### 📌 v1.0.1
+
+#### ✨ 新增功能
+
+- 新增“通知中心”多渠道通知配置能力。
+  - 通知配置从单一 Webhook 扩展为多渠道：
+    - Webhook
+    - Bark
+    - 企业微信应用消息
+    - 企业微信群机器人
+    - 钉钉群自定义机器人
+    - 钉钉企业内机器人
+    - 飞书机器人
+    - Telegram 机器人
+  - 新增通知中心后端接口：
+    - `GET /api/notifications/config`
+    - `POST /api/notifications/config`
+    - `POST /api/notifications/test/{channel}`
+  - 新增各通知渠道的测试发送能力，可按渠道发送模拟短信测试。
+- 新增短信批量管理能力。
+  - 删除短信：
+    - 删除单条短信
+    - 删除整个短信对话
+    - 批量删除短信或多个对话
+  - 新增短信删除相关后端接口：
+    - `DELETE /api/sms/message/{id}`
+    - `DELETE /api/sms/conversation/{phone_number}`
+    - `POST /api/sms/batch-delete`
+- 新增设备侧一键卸载脚本 `uninstall.sh`，支持彻底卸载和保留用户数据卸载。
+
+#### 💫 体验优化
+
+- Dashboard 仪表盘加载性能优化。
+- 通知中心页面重构为左右分栏布局：
+  - 左侧展示通知渠道列表和启用统计
+  - 右侧展示当前渠道配置表单
+- 通知中心支持按渠道独立配置启用状态、短信转发、模板和渠道专属参数。
+- 通知模板编辑支持中文变量标签，前端显示中文变量，保存时映射为后端变量。
+- 通知渠道测试按钮会先保存当前配置，再执行测试，减少“配置未保存导致测试不生效”的误操作。
+- 短信页面优化为更完整的对话管理体验：
+  - 对话列表支持删除按钮
+  - 聊天消息支持单条删除
+  - 支持批量管理，有清晰的选择数量提示
+  - 删除这种不可逆的危险操作增加二次确认
+- 短信列表加载数量提升，减少历史短信遗漏。
+
+#### 📚 接口与文档更新
+
+- README 中 Webhook 章节改为“通知中心”，补充多渠道通知能力说明。
+- Bruno 文档同步更新通知中心接口说明。
+- README 新增卸载脚本使用说明、参数说明和清理范围说明。
+- API 类型定义新增完整通知中心配置类型，包括各渠道配置结构。
+
 ## ModemManager D-Bus 接口
 
-当前实现以 ModemManager 为主，不再以 ofono 作为主要后端。
+当前实现以 ModemManager 为主。
 
 ### 核心接口
 
@@ -287,7 +384,6 @@ journalctl -u simadmin -f
 | `org.freedesktop.ModemManager1.Modem.Modem3gpp` | 运营商、注册、扫描 |
 | `org.freedesktop.ModemManager1.Modem.Simple` | 简化连接和断开 |
 | `org.freedesktop.ModemManager1.Modem.Messaging` | 短信发送和接收 |
-| `org.freedesktop.ModemManager1.Modem.Voice` | 通话管理 |
 | `org.freedesktop.ModemManager1.Sim` | SIM 属性 |
 | `org.freedesktop.ModemManager1.Bearer` | 数据连接 bearer |
 
@@ -466,24 +562,6 @@ busctl introspect org.freedesktop.ModemManager1 /org/freedesktop/ModemManager1/M
 | `/api/baseband/restart` | POST | 重启基带并尝试恢复网络 |
 | `/api/baseband/restart/status` | GET | 基带重启进度 |
 
-### 通话功能
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/calls` | GET | 当前通话列表 |
-| `/api/call/dial` | POST | 拨打电话 |
-| `/api/call/hangup` | POST | 挂断指定通话 |
-| `/api/call/hangup-all` | POST | 挂断全部通话 |
-| `/api/call/answer` | POST | 接听来电 |
-| `/api/call/history` | GET | 通话记录，支持 `limit` / `offset` |
-| `/api/call/history/{id}` | DELETE | 删除单条通话记录 |
-| `/api/call/history/clear` | POST | 清空通话记录 |
-| `/api/call/settings` | GET/POST | 通话设置，目前仅支持 `VoiceCallWaiting` |
-| `/api/call/volume` | GET/POST | 当前后端不支持 |
-| `/api/call/forwarding` | GET/POST | 当前后端不支持 |
-| `/api/ims/status` | GET | 当前后端不支持 |
-| `/api/voicemail/status` | GET | 当前后端不支持 |
-
 ### 短信功能
 
 | 接口 | 方法 | 说明 |
@@ -493,6 +571,9 @@ busctl introspect org.freedesktop.ModemManager1 /org/freedesktop/ModemManager1/M
 | `/api/sms/conversation` | GET | 指定号码会话，参数 `phone_number` |
 | `/api/sms/stats` | GET | 短信统计 |
 | `/api/sms/clear` | POST | 清空短信记录 |
+| `/api/sms/message/{id}` | DELETE | 删除单条短信 |
+| `/api/sms/conversation/{phone_number}` | DELETE | 删除指定号码会话 |
+| `/api/sms/batch-delete` | POST | 批量删除短信或多个会话 |
 
 ### 系统信息
 
@@ -503,24 +584,26 @@ busctl introspect org.freedesktop.ModemManager1 /org/freedesktop/ModemManager1/M
 | `/api/system/reboot` | POST | 系统重启 |
 | `/api/service/restart` | POST | 重启 SimAdmin 服务 |
 
-### Webhook
+### 通知中心
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/webhook/config` | GET/POST | Webhook 配置 |
-| `/api/webhook/test` | POST | 测试 Webhook |
+| `/api/notifications/config` | GET/POST | 多渠道通知配置 |
+| `/api/notifications/test/{channel}` | POST | 测试指定通知渠道 |
 
-Webhook 配置支持：
+通知配置支持：
 
-- 开关。
-- URL。
-- 短信转发。
-- 通话转发。
-- 自定义 HTTP headers。
-- `secret` 字段。
-- `sms_template` / `call_template` 模板。
+- Webhook。
+- Bark。
+- 企业微信应用消息。
+- 企业微信群机器人。
+- 钉钉群自定义机器人。
+- 钉钉企业内机器人。
+- 飞书机器人。
+- Telegram 机器人。
+- `sms_template` 模板。
 
-模板变量包括短信号码、内容、时间，以及通话号码、方向、开始时间、时长、是否接听等字段。
+模板变量包括短信号码、内容、方向、状态和时间等字段。
 
 ### OTA 更新
 
@@ -545,7 +628,7 @@ www/
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "commit": "abcdef0",
   "build_time": "2026-05-06T00:00:00Z",
   "binary_md5": "md5-of-binary",
@@ -601,11 +684,10 @@ pub async fn set_some_modem_state(conn: &Connection) -> zbus::Result<()> {
 SQLite 数据库保存：
 
 - `sms_messages`：短信收发记录。
-- `call_history`：通话记录。
 
 配置文件保存：
 
-- Webhook 配置。
+- 通知中心配置。
 - 是否允许漫游。
 - 数据连接是否由用户启用。
 

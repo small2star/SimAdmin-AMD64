@@ -30,6 +30,7 @@ import {
   Menu as MenuIcon,
   MoreVert as MoreVertIcon,
   Refresh as RefreshIcon,
+  Router as RouterIcon,
   Speed as SpeedIcon,
 } from '@mui/icons-material'
 import { useTheme } from '../../contexts/ThemeContext'
@@ -39,6 +40,8 @@ import type { BasebandRestartResponse, BasebandRestartStep } from '../../api/typ
 
 const TOPBAR_TRANSITION = '300ms cubic-bezier(0.4, 0, 0.2, 1)'
 
+type RestartConfirmTarget = 'baseband' | 'service' | 'device'
+
 interface TopBarProps {
   drawerWidth: number
   onMenuClick: () => void
@@ -46,19 +49,10 @@ interface TopBarProps {
   onRefreshIntervalChange: (interval: number) => void
 }
 
-function BasebandIcon() {
-  return (
-    <SvgIcon viewBox="0 0 1024 1024" sx={{ fontSize: 18 }}>
-      <path d="M816.4864 453.4784a249.6 249.6 0 0 0 0-352.9728l-36.1984 36.1984a198.4 198.4 0 0 1 0 280.576l36.1984 36.1984zM793.6 277.0944a185.6512 185.6512 0 0 1-54.3744 131.2256l-36.1984-36.1984a134.4 134.4 0 0 0 0-190.0544l36.1984-36.2496A185.6512 185.6512 0 0 1 793.6 277.0944z m-96 0c0 32.256-12.8 63.1808-35.6352 86.016l-36.1984-36.1984a70.4 70.4 0 0 0 0-99.584l36.1984-36.1984c22.8352 22.784 35.6352 53.76 35.6352 86.016z m-563.2-0.1024c0 66.2016 26.3168 129.6896 73.1136 176.4864l36.1984-36.1984a198.4 198.4 0 0 1 0-280.576l-36.1984-36.1984A249.6 249.6 0 0 0 134.4 276.992z m110.08 71.1168a185.6 185.6 0 0 1 40.2944-202.24l36.1984 36.1472a134.4 134.4 0 0 0 0 190.1056l-36.1984 36.1984a185.6 185.6 0 0 1-40.2432-60.2112z m117.5552 15.0016a121.6 121.6 0 0 1 0-171.9808l36.1984 36.1984a70.4 70.4 0 0 0 0 99.584l-36.1984 36.1984z m117.9648-139.1616v320H115.2a51.2 51.2 0 0 0-51.2 51.2v281.6a51.2 51.2 0 0 0 51.2 51.2h793.6a51.2 51.2 0 0 0 51.2-51.2v-281.6a51.2 51.2 0 0 0-51.2-51.2h-377.6v-320h-51.2z m-364.8 371.2h793.6v281.6H115.2v-281.6z m499.2 102.4h-76.8v76.8H614.4v-76.8z m-76.8-25.6a25.6 25.6 0 0 0-25.6 25.6v76.8a25.6 25.6 0 0 0 25.6 25.6H614.4a25.6 25.6 0 0 0 25.6-25.6v-76.8a25.6 25.6 0 0 0-25.6-25.6h-76.8z m192 25.6h76.8v76.8h-76.8v-76.8z m-25.6 0a25.6 25.6 0 0 1 25.6-25.6h76.8a25.6 25.6 0 0 1 25.6 25.6v76.8a25.6 25.6 0 0 1-25.6 25.6h-76.8a25.6 25.6 0 0 1-25.6-25.6v-76.8z" fill="currentColor" />
-    </SvgIcon>
-  )
-}
-
 function ServiceRestartIcon() {
   return (
     <SvgIcon viewBox="0 0 1024 1024" sx={{ fontSize: 18 }}>
-      <path d="M479.296 320.096c-20.4-18.496-53.2-3.312-53.2 24.192v335.296c0 27.616 32.896 42.816 53.2 24.208a13.76 13.76 0 0 0 1.312-1.2l167.904-167.888a32.192 32.192 0 0 0 0-45.408L480.608 321.392c-0.4-0.384-0.912-0.784-1.312-1.296z" fill="currentColor" />
-      <path d="M512 128a381.12 381.12 0 0 1 179.376 44.848l-74.784 27.856 22.336 59.968 179.92-67.008L751.856 13.728l-59.968 22.336 29.84 80.16A445.456 445.456 0 0 0 512 64C264.608 64 64 264.608 64 512c0 40.608 5.504 79.904 15.632 117.312H146.4A382.304 382.304 0 0 1 128 512C128 300.304 300.304 128 512 128zM935.296 365.312h-68.48A381.76 381.76 0 0 1 896 512c0 211.696-172.304 384-384 384a381.392 381.392 0 0 1-210.384-63.136l62.64-13.728-13.696-62.496-187.536 41.104 41.104 187.552 62.512-13.712-22-100.336A445.616 445.616 0 0 0 512 960c247.408 0 448-200.592 448-448 0-51.392-8.768-100.72-24.704-146.688z" fill="currentColor" />
+      <path d="M768.000512 495.104a128 128 0 1 0 128-128 128 128 0 0 0-128 128z m0 0" p-id="28061"></path><path d="M335.872512 128a96 96 0 1 0 96-96A96 96 0 0 0 335.872512 128z m0 0M0.000512 544.256a79.872 79.872 0 1 0 79.872-80.128A79.872 79.872 0 0 0 0.000512 544.256z m0 0" p-id="28062"></path><path d="M352.000512 864a64 64 0 1 0 64 63.744 64 64 0 0 0-64-63.744z m501.248 53.76a144.128 144.128 0 1 1 0-204.8 143.36 143.36 0 0 1 0 204.8z m-23.808-626.944a114.432 114.432 0 0 1-80.384 33.28 112.64 112.64 0 0 1-80.384-33.28 113.664 113.664 0 0 1 0-161.024 113.664 113.664 0 0 1 160.768 0 113.664 113.664 0 0 1 0 161.024zM246.528512 326.912a88.064 88.064 0 1 1 0-124.672 88.064 88.064 0 0 1 0 124.672zM218.880512 826.88a72.704 72.704 0 0 1-51.2 20.992 71.936 71.936 0 0 1 0-143.872 72.192 72.192 0 0 1 51.2 122.88z m0 0" fill="currentColor" />
     </SvgIcon>
   )
 }
@@ -90,6 +84,7 @@ export default function TopBar({
   const [systemActionSeverity, setSystemActionSeverity] = useState<'info' | 'success' | 'error'>('info')
   const [deviceRebootProgressOpen, setDeviceRebootProgressOpen] = useState(false)
   const [deviceRebootSteps, setDeviceRebootSteps] = useState<BasebandRestartStep[]>([])
+  const [restartConfirmTarget, setRestartConfirmTarget] = useState<RestartConfirmTarget | null>(null)
   const deviceRebootTimersRef = useRef<number[]>([])
   const title = drawerWidth <= 80 ? 'SimAdmin - SIM/eSIM 中枢' : 'SIM/eSIM 中枢'
 
@@ -212,6 +207,32 @@ export default function TopBar({
     }
   }
 
+  const restartConfirmTitle = restartConfirmTarget === 'baseband'
+    ? '确认重启基带'
+    : restartConfirmTarget === 'service'
+      ? '确认重启服务'
+      : '确认重启设备'
+
+  const restartConfirmContent = restartConfirmTarget === 'baseband'
+    ? '确定要重启基带吗？重启期间网络注册和数据连接可能会短暂中断。'
+    : restartConfirmTarget === 'service'
+      ? '确定要重启 SimAdmin 服务吗？重启期间页面可能会短暂不可用。'
+      : '确定要重启设备吗？设备会离线并中断当前连接，请确认后再继续。'
+
+  const handleConfirmRestart = () => {
+    const target = restartConfirmTarget
+    if (!target) return
+
+    setRestartConfirmTarget(null)
+    if (target === 'baseband') {
+      void handleRestartBaseband()
+    } else if (target === 'service') {
+      void handleRestartService()
+    } else {
+      void handleRebootDevice()
+    }
+  }
+
   const handleRefreshIntervalChange = (interval: number) => {
     onRefreshIntervalChange(interval)
     setRefreshMenuAnchor(null)
@@ -273,21 +294,21 @@ export default function TopBar({
           </Tooltip>
           <Tooltip title="重启基带">
             <span>
-              <IconButton size="small" color="default" onClick={() => void handleRestartBaseband()} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
-                {basebandRestarting ? <CircularProgress size={18} color="inherit" /> : <BasebandIcon />}
+              <IconButton size="small" color="default" onClick={() => setRestartConfirmTarget('baseband')} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
+                {basebandRestarting ? <CircularProgress size={18} color="inherit" /> : <RouterIcon sx={{ fontSize: 22 }} />}
               </IconButton>
             </span>
           </Tooltip>
           <Tooltip title="重启服务">
             <span>
-              <IconButton size="small" color="default" onClick={() => void handleRestartService()} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
+              <IconButton size="small" color="default" onClick={() => setRestartConfirmTarget('service')} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
                 {systemActionLoading === 'service' ? <CircularProgress size={18} color="inherit" /> : <ServiceRestartIcon />}
               </IconButton>
             </span>
           </Tooltip>
           <Tooltip title="重启设备">
             <span>
-              <IconButton size="small" color="default" onClick={() => void handleRebootDevice()} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
+              <IconButton size="small" color="default" onClick={() => setRestartConfirmTarget('device')} disabled={basebandRestarting || systemActionLoading !== null} sx={{ p: 0.75 }}>
                 {systemActionLoading === 'device' ? <CircularProgress size={18} color="inherit" /> : <DeviceRebootIcon />}
               </IconButton>
             </span>
@@ -370,6 +391,23 @@ export default function TopBar({
             </Stack>
           </DialogContent>
           <DialogActions><Button disabled={systemActionLoading === 'device'} onClick={() => setDeviceRebootProgressOpen(false)}>关闭</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={!!restartConfirmTarget} onClose={() => setRestartConfirmTarget(null)}>
+          <DialogTitle>{restartConfirmTitle}</DialogTitle>
+          <DialogContent>
+            <Typography>{restartConfirmContent}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRestartConfirmTarget(null)}>取消</Button>
+            <Button
+              onClick={handleConfirmRestart}
+              color="error"
+              variant="contained"
+            >
+              确认重启
+            </Button>
+          </DialogActions>
         </Dialog>
 
         <Snackbar

@@ -1482,17 +1482,20 @@ dependencies = [
 
 [[package]]
 name = "simadmin"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "futures-util",
  "lazy_static",
  "libc",
  "md5",
+ "percent-encoding",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

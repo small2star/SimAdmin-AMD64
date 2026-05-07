@@ -306,6 +306,42 @@ impl Database {
         Ok(())
     }
 
+    /// 删除单条短信
+    pub fn delete_sms(&self, id: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM sms_messages WHERE id = ?1", params![id])
+    }
+
+    /// 删除一个对话的所有短信
+    pub fn delete_sms_conversation(&self, phone_number: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM sms_messages WHERE phone_number = ?1",
+            params![phone_number],
+        )
+    }
+
+    /// 按短信 ID 和对话号码批量删除
+    pub fn delete_sms_batch(&self, ids: &[i64], phone_numbers: &[String]) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut deleted = 0usize;
+
+        for phone_number in phone_numbers {
+            deleted += tx.execute(
+                "DELETE FROM sms_messages WHERE phone_number = ?1",
+                params![phone_number],
+            )?;
+        }
+
+        for id in ids {
+            deleted += tx.execute("DELETE FROM sms_messages WHERE id = ?1", params![id])?;
+        }
+
+        tx.commit()?;
+        Ok(deleted)
+    }
+
     // ==================== 通话记录相关方法 ====================
 
     /// 插入新通话记录

@@ -21,6 +21,8 @@ import type {
   ManualRegisterRequest,
   NetworkInfo,
   NetworkInterfacesResponse,
+  NotificationChannelKey,
+  NotificationConfig,
   OperatorListResponse,
   OtaStatusResponse,
   OtaLatestReleaseResponse,
@@ -38,7 +40,6 @@ import type {
   SmsListRequest,
   SmsStats,
   SystemStatsResponse,
-  WebhookConfig,
   WebhookTestResponse,
 } from './types'
 
@@ -308,6 +309,28 @@ class SimAdminCurrentAPI {
     })
   }
 
+  async deleteSmsMessage(id: number) {
+    return request<ApiResponse<{ deleted: number }>>(`/sms/message/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async deleteSmsConversation(phoneNumber: string) {
+    return request<ApiResponse<{ deleted: number }>>(
+      `/sms/conversation/${encodeURIComponent(phoneNumber)}`,
+      {
+        method: 'DELETE',
+      },
+    )
+  }
+
+  async deleteSmsBatch(payload: { ids?: number[]; phone_numbers?: string[] }) {
+    return request<ApiResponse<{ deleted: number }>>('/sms/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
   async getCalls() {
     return request<ApiResponse<CallListResponse>>('/calls')
   }
@@ -371,19 +394,19 @@ class SimAdminCurrentAPI {
     })
   }
 
-  async getWebhookConfig() {
-    return request<ApiResponse<WebhookConfig>>('/webhook/config')
+  async getNotificationConfig() {
+    return request<ApiResponse<NotificationConfig>>('/notifications/config')
   }
 
-  async setWebhookConfig(config: WebhookConfig) {
-    return request<ApiResponse<Record<string, unknown>>>('/webhook/config', {
+  async setNotificationConfig(config: NotificationConfig) {
+    return request<ApiResponse<Record<string, unknown>>>('/notifications/config', {
       method: 'POST',
       body: JSON.stringify(config),
     })
   }
 
-  async testWebhook() {
-    return request<ApiResponse<WebhookTestResponse>>('/webhook/test', {
+  async testNotificationChannel(channel: NotificationChannelKey) {
+    return request<ApiResponse<WebhookTestResponse>>(`/notifications/test/${channel}`, {
       method: 'POST',
     })
   }
