@@ -97,6 +97,29 @@ SimAdmin 是一套面向 Debian 蜂窝 CPE、随身 WiFi、软路由类设备的
 
 严禁将本项目或其衍生版本闭源后作为专有软件分发。
 
+## 社区交流
+
+⚠️ 温馨提示：群聊仅限日常讨论和经验分享，如需反馈问题或提交新需求。
+
+<table>
+  <thead>
+    <tr>
+      <th width="100%">QQ 群</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="./static/Community/Community_QQ_Dark.png" />
+          <source media="(prefers-color-scheme: light)" srcset="./static/Community/Community_QQ_Light.png" />
+          <img src="./static/Community/Community_QQ_Light.png" />
+        </picture>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
 ## 快速开始
 
 ### 项目结构
@@ -346,12 +369,14 @@ journalctl -u simadmin -f
 - 修正 DDNS 模块 IPv6 公网地址判断逻辑，前后端统一以公网域 IPv6 作为 AAAA 记录候选地址，避免误选链路本地地址、内网 ULA 地址。
 - IPv6 地址候选按 `/128` 优先排序，提升多 IPv6 地址场景下 DDNS 自动选择地址的准确性。
 - 修复宿主机 `FORWARD` 默认策略为 `DROP` 时，清空 filter 表规则引发 Docker 网桥转发失效、外部无法访问容器映射端口的问题。
+- 修复企业微信应用消息可能报错的问题。
 
 #### 💫 体验优化
 
 - 抽象封装前端通用 IPv6 公网地址筛选工具，仪表盘连接展示、设备网络 DDNS 接口统一复用同一套判定规则。
 - 数据连接看门狗保留蜂窝状态巡检与 Modem 自愈能力，不再自动清空宿主机 iptables/ip6tables 规则，避免影响 Docker、VPN 及容器端口映射等业务。
 - 切换蜂窝数据连接时取消全局防火墙规则刷新，减少对宿主机网络栈、容器转发链路的副作用。
+- 通知中心统一在模板渲染层将短信、DDNS 的时间变量格式化为北京时间，避免各渠道收到 UTC 原始时间。
 
 #### 📚 接口与文档更新
 
@@ -858,29 +883,6 @@ SQLite 数据库保存：
 - `tar`
 - `unzip`
 - `curl`
-
-## 社区交流
-
-⚠️ 温馨提示：群聊仅限日常讨论和经验分享，如需反馈问题或提交新需求。
-
-<table>
-  <thead>
-    <tr>
-      <th width="100%">QQ 群</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="./static/Community/Community_QQ_Dark.png" />
-          <source media="(prefers-color-scheme: light)" srcset="./static/Community/Community_QQ_Light.png" />
-          <img src="./static/Community/Community_QQ_Light.png" />
-        </picture>
-      </td>
-    </tr>
-  </tbody>
-</table>
 
 ##  license 许可证
 

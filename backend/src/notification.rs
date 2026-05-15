@@ -6,19 +6,39 @@ use crate::config::{
 use crate::db::{CallRecord, SmsMessage};
 use crate::models::DdnsEvent;
 use base64::{engine::general_purpose, Engine as _};
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::{Client, StatusCode};
 use ring::hmac;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const BEIJING_UTC_OFFSET_SECONDS: i32 = 8 * 60 * 60;
+const NOTIFICATION_TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 /// Notification sender for all configured notification channels.
 pub struct NotificationSender {
     client: Client,
     config_manager: Arc<ConfigManager>,
+    wecom_token_cache: tokio::sync::Mutex<HashMap<(String, String), WecomTokenCacheEntry>>,
+}
+
+struct WecomTokenCacheEntry {
+    token: String,
+    refresh_at: Instant,
+}
+
+struct WecomTokenResponse {
+    access_token: String,
+    expires_in: Option<u64>,
+}
+
+enum WecomMessageError {
+    InvalidAccessToken(String),
+    Other(String),
 }
 
 impl NotificationSender {
@@ -30,6 +50,7 @@ impl NotificationSender {
                 .build()
                 .expect("Failed to create HTTP client"),
             config_manager,
+            wecom_token_cache: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -106,7 +127,7 @@ impl NotificationSender {
             direction: "incoming".to_string(),
             phone_number: "+8613800138000".to_string(),
             content: "这是一条测试短信 (Notification Test)".to_string(),
-            timestamp: Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            timestamp: beijing_now_string(),
             status: "received".to_string(),
             pdu: None,
         };
@@ -517,8 +538,7 @@ impl NotificationSender {
             return Ok("企业微信应用消息 skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_wecom_app_text(config, text)
-            .await
+        self.send_wecom_app_text(config, text).await
     }
 
     async fn send_wecom_app_text(
@@ -533,13 +553,6 @@ impl NotificationSender {
             return Err("企业微信 CorpID、AgentID 或 Secret 未配置".to_string());
         }
 
-        let token = self
-            .fetch_wecom_access_token(config.corp_id.trim(), config.secret.trim())
-            .await?;
-        let url = format!(
-            "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={}",
-            encode_query_value(&token)
-        );
         let agent_id = config
             .agent_id
             .trim()
@@ -555,7 +568,64 @@ impl NotificationSender {
             "safe": if config.safe { 1 } else { 0 },
         });
 
-        self.post_json("企业微信应用消息", &url, payload).await
+        self.post_wecom_app_message(config, payload).await
+    }
+
+    async fn post_wecom_app_message(
+        &self,
+        config: &WecomAppConfig,
+        payload: Value,
+    ) -> Result<String, String> {
+        let corp_id = config.corp_id.trim();
+        let secret = config.secret.trim();
+        let mut retried = false;
+
+        loop {
+            let token = self.fetch_wecom_access_token(corp_id, secret).await?;
+            match self
+                .post_wecom_app_payload(token.as_str(), payload.clone())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(WecomMessageError::InvalidAccessToken(err)) if !retried => {
+                    retried = true;
+                    self.invalidate_wecom_access_token(corp_id, secret).await;
+                    continue;
+                }
+                Err(WecomMessageError::InvalidAccessToken(err)) => return Err(err),
+                Err(WecomMessageError::Other(err)) => return Err(err),
+            }
+        }
+    }
+
+    async fn post_wecom_app_payload(
+        &self,
+        access_token: &str,
+        payload: Value,
+    ) -> Result<String, WecomMessageError> {
+        let url = format!(
+            "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={}",
+            access_token
+        );
+        let response = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                WecomMessageError::Other(format!("Failed to send 企业微信应用消息 message: {}", e))
+            })?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if is_wecom_access_token_error(&body) {
+            return Err(WecomMessageError::InvalidAccessToken(
+                response_result("企业微信应用消息", status, body).unwrap_or_else(|err| err),
+            ));
+        }
+
+        response_result("企业微信应用消息", status, body).map_err(WecomMessageError::Other)
     }
 
     async fn fetch_wecom_access_token(
@@ -563,13 +633,53 @@ impl NotificationSender {
         corp_id: &str,
         secret: &str,
     ) -> Result<String, String> {
+        let cache_key = (corp_id.to_string(), secret.to_string());
+        let mut cache = self.wecom_token_cache.lock().await;
+        if let Some(entry) = cache.get(&cache_key) {
+            if Instant::now() < entry.refresh_at {
+                return Ok(entry.token.clone());
+            }
+        }
+
+        let parsed = self.request_wecom_access_token(corp_id, secret).await?;
+        let expires_in = parsed.expires_in.unwrap_or(7200).max(1);
+        let refresh_after = if expires_in > 600 {
+            expires_in - 300
+        } else {
+            (expires_in / 2).max(1)
+        };
+        let token = parsed.access_token;
+        cache.insert(
+            cache_key,
+            WecomTokenCacheEntry {
+                token: token.clone(),
+                refresh_at: Instant::now() + Duration::from_secs(refresh_after),
+            },
+        );
+
+        Ok(token)
+    }
+
+    async fn invalidate_wecom_access_token(&self, corp_id: &str, secret: &str) {
+        let mut cache = self.wecom_token_cache.lock().await;
+        cache.remove(&(corp_id.to_string(), secret.to_string()));
+    }
+
+    async fn request_wecom_access_token(
+        &self,
+        corp_id: &str,
+        secret: &str,
+    ) -> Result<WecomTokenResponse, String> {
         #[derive(Debug, Deserialize)]
-        struct WecomTokenResponse {
+        struct RawWecomTokenResponse {
+            #[serde(default)]
             errcode: i64,
             #[serde(default)]
             errmsg: String,
             #[serde(default)]
             access_token: String,
+            #[serde(default)]
+            expires_in: Option<u64>,
         }
 
         let url = format!(
@@ -588,7 +698,7 @@ impl NotificationSender {
         if !status.is_success() {
             return Err(format!("WeCom token request failed ({}): {}", status, body));
         }
-        let parsed: WecomTokenResponse = serde_json::from_str(&body)
+        let parsed: RawWecomTokenResponse = serde_json::from_str(&body)
             .map_err(|e| format!("Failed to parse WeCom token response: {}", e))?;
         if parsed.errcode != 0 {
             return Err(format!(
@@ -599,7 +709,10 @@ impl NotificationSender {
         if parsed.access_token.is_empty() {
             return Err("WeCom token response did not include access_token".to_string());
         }
-        Ok(parsed.access_token)
+        Ok(WecomTokenResponse {
+            access_token: parsed.access_token,
+            expires_in: parsed.expires_in,
+        })
     }
 
     async fn send_wecom_robot_sms(
@@ -637,8 +750,7 @@ impl NotificationSender {
             return Ok("企业微信群机器人 skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_wecom_robot_text(config, text)
-            .await
+        self.send_wecom_robot_text(config, text).await
     }
 
     async fn send_wecom_robot_text(
@@ -694,8 +806,7 @@ impl NotificationSender {
             return Ok("钉钉群自定义机器人 skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_dingtalk_robot_text(config, text)
-            .await
+        self.send_dingtalk_robot_text(config, text).await
     }
 
     async fn send_dingtalk_robot_text(
@@ -769,8 +880,7 @@ impl NotificationSender {
             return Ok("钉钉企业内部机器人 skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_dingtalk_app_text(config, text)
-            .await
+        self.send_dingtalk_app_text(config, text).await
     }
 
     async fn send_dingtalk_app_text(
@@ -900,8 +1010,7 @@ impl NotificationSender {
             return Ok("飞书机器人 skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_feishu_robot_text(config, text)
-            .await
+        self.send_feishu_robot_text(config, text).await
     }
 
     async fn send_feishu_robot_text(
@@ -964,8 +1073,7 @@ impl NotificationSender {
             return Ok("Telegram skipped".to_string());
         }
         let text = render_ddns_template(&config.common.ddns_template, event, false);
-        self.send_telegram_text(config, text)
-            .await
+        self.send_telegram_text(config, text).await
     }
 
     async fn send_telegram_text(
@@ -1095,7 +1203,8 @@ fn render_ddns_template(template: &str, event: &DdnsEvent, escape_json: bool) ->
     let record_type = maybe_escape(&event.record_type);
     let status = maybe_escape(&event.status);
     let message = maybe_escape(&event.message);
-    let timestamp = maybe_escape(&event.timestamp);
+    let timestamp_value = format_notification_time(&event.timestamp);
+    let timestamp = maybe_escape(&timestamp_value);
 
     template
         .replace("{{domains}}", &domains)
@@ -1176,6 +1285,24 @@ fn hmac_sha256_base64(key: &[u8], data: &[u8]) -> String {
     general_purpose::STANDARD.encode(tag.as_ref())
 }
 
+fn is_wecom_access_token_error(body: &str) -> bool {
+    json_errcode(body)
+        .map(|(errcode, _)| matches!(errcode, 40014 | 42001))
+        .unwrap_or(false)
+}
+
+fn json_errcode(body: &str) -> Option<(i64, String)> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let errcode = value.get("errcode").and_then(Value::as_i64)?;
+    let message = value
+        .get("errmsg")
+        .or_else(|| value.get("err_msg"))
+        .and_then(Value::as_str)
+        .unwrap_or(body)
+        .to_string();
+    Some((errcode, message))
+}
+
 fn response_result(label: &str, status: StatusCode, body: String) -> Result<String, String> {
     if !status.is_success() {
         return Err(format!("{} returned HTTP {}: {}", label, status, body));
@@ -1233,21 +1360,27 @@ fn render_sms_template(template: &str, message: &SmsMessage, escape_json: bool) 
     } else {
         message.content.clone()
     };
+    let timestamp = render_time_value(&message.timestamp, escape_json);
 
     template
         .replace("{{id}}", &message.id.to_string())
         .replace("{{phone_number}}", &message.phone_number)
         .replace("{{content}}", &content)
         .replace("{{direction}}", &message.direction)
-        .replace("{{timestamp}}", &message.timestamp)
+        .replace("{{timestamp}}", &timestamp)
         .replace("{{status}}", &message.status)
         .replace("{{sender}}", &message.phone_number)
         .replace("{{message}}", &content)
-        .replace("{{time}}", &message.timestamp)
+        .replace("{{time}}", &timestamp)
 }
 
 fn render_call_template(template: &str, call: &CallRecord, escape_json: bool) -> String {
-    let end_time = call.end_time.clone().unwrap_or_default();
+    let start_time = render_time_value(&call.start_time, escape_json);
+    let end_time = call
+        .end_time
+        .as_deref()
+        .map(|value| render_time_value(value, escape_json))
+        .unwrap_or_default();
     let answered_str = if call.answered { "是" } else { "否" };
     let answered_value = if escape_json {
         escape_json_string(answered_str)
@@ -1266,12 +1399,54 @@ fn render_call_template(template: &str, call: &CallRecord, escape_json: bool) ->
         .replace("{{direction}}", &call.direction)
         .replace("{{direction_cn}}", direction_cn)
         .replace("{{duration}}", &call.duration.to_string())
-        .replace("{{start_time}}", &call.start_time)
+        .replace("{{start_time}}", &start_time)
         .replace("{{end_time}}", &end_time)
         .replace("{{answered}}", &answered_value)
         .replace("{{answered_bool}}", &call.answered.to_string())
         .replace("{{caller}}", &call.phone_number)
-        .replace("{{time}}", &call.start_time)
+        .replace("{{time}}", &start_time)
+}
+
+fn render_time_value(value: &str, escape_json: bool) -> String {
+    let formatted = format_notification_time(value);
+    if escape_json {
+        escape_json_string(&formatted)
+    } else {
+        formatted
+    }
+}
+
+fn beijing_now_string() -> String {
+    Utc::now()
+        .with_timezone(&beijing_offset())
+        .format(NOTIFICATION_TIME_FORMAT)
+        .to_string()
+}
+
+fn format_notification_time(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+
+    if let Ok(datetime) = DateTime::parse_from_rfc3339(value) {
+        return datetime
+            .with_timezone(&beijing_offset())
+            .format(NOTIFICATION_TIME_FORMAT)
+            .to_string();
+    }
+
+    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"] {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, format) {
+            return datetime.format(NOTIFICATION_TIME_FORMAT).to_string();
+        }
+    }
+
+    value.to_string()
+}
+
+fn beijing_offset() -> FixedOffset {
+    FixedOffset::east_opt(BEIJING_UTC_OFFSET_SECONDS).expect("valid Beijing UTC offset")
 }
 
 fn escape_json_string(s: &str) -> String {
@@ -1291,4 +1466,83 @@ fn compute_legacy_signature(secret: &str, data: &str) -> String {
     let hash = hasher.finish();
 
     format!("{:016x}", hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_rfc3339_time_as_beijing_time() {
+        assert_eq!(
+            format_notification_time("2026-05-14T16:30:45Z"),
+            "2026-05-15 00:30:45"
+        );
+        assert_eq!(
+            format_notification_time("2026-05-15T08:30:45+08:00"),
+            "2026-05-15 08:30:45"
+        );
+    }
+
+    #[test]
+    fn renders_sms_time_variables_as_beijing_time() {
+        let message = SmsMessage {
+            id: 7,
+            direction: "incoming".to_string(),
+            phone_number: "+8613800138000".to_string(),
+            content: "hello".to_string(),
+            timestamp: "2026-05-14T16:30:45Z".to_string(),
+            status: "received".to_string(),
+            pdu: None,
+        };
+
+        assert_eq!(
+            render_sms_template("{{timestamp}}|{{time}}", &message, false),
+            "2026-05-15 00:30:45|2026-05-15 00:30:45"
+        );
+    }
+
+    #[test]
+    fn renders_call_time_variables_as_beijing_time() {
+        let call = CallRecord {
+            id: 9,
+            direction: "incoming".to_string(),
+            phone_number: "+8613800138000".to_string(),
+            duration: 12,
+            start_time: "2026-05-14T16:30:45Z".to_string(),
+            end_time: Some("2026-05-14T16:31:45Z".to_string()),
+            answered: true,
+        };
+
+        assert_eq!(
+            render_call_template("{{start_time}}|{{end_time}}|{{time}}", &call, false),
+            "2026-05-15 00:30:45|2026-05-15 00:31:45|2026-05-15 00:30:45"
+        );
+    }
+
+    #[test]
+    fn renders_ddns_time_variables_as_beijing_time() {
+        let event = DdnsEvent {
+            timestamp: "2026-05-14T16:30:45Z".to_string(),
+            ..DdnsEvent::default()
+        };
+
+        assert_eq!(
+            render_ddns_template("{{timestamp}}|{{time}}|{{更新时间}}", &event, false),
+            "2026-05-15 00:30:45|2026-05-15 00:30:45|2026-05-15 00:30:45"
+        );
+    }
+
+    #[test]
+    fn detects_wecom_access_token_errors() {
+        assert!(is_wecom_access_token_error(
+            r#"{"errcode":40014,"errmsg":"invalidaccess_token"}"#
+        ));
+        assert!(is_wecom_access_token_error(
+            r#"{"errcode":42001,"errmsg":"access_token expired"}"#
+        ));
+        assert!(!is_wecom_access_token_error(
+            r#"{"errcode":0,"errmsg":"ok"}"#
+        ));
+    }
 }
