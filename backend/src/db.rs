@@ -41,6 +41,10 @@ pub struct SmsStats {
     pub total: i64,
     pub incoming: i64,
     pub outgoing: i64,
+    #[serde(default)]
+    pub pushed: i64,
+    #[serde(default)]
+    pub push_attempted: i64,
 }
 
 /// 通话统计
@@ -206,6 +210,19 @@ fn non_empty_option(value: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn table_has_column(conn: &Connection, table_name: &str, column_name: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+
+    for row in rows {
+        if row? == column_name {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 impl Database {
     /// 创建或打开数据库
     pub fn new(db_path: PathBuf) -> Result<Self> {
@@ -220,11 +237,20 @@ impl Database {
                 content TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 status TEXT NOT NULL,
+                notification_status TEXT NOT NULL DEFAULT 'pending',
                 pdu TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
+
+        if !table_has_column(&conn, "sms_messages", "notification_status")? {
+            conn.execute(
+                "ALTER TABLE sms_messages
+                 ADD COLUMN notification_status TEXT NOT NULL DEFAULT 'pending'",
+                [],
+            )?;
+        }
 
         // 创建短信索引
         conn.execute(
@@ -234,6 +260,11 @@ impl Database {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_messages(phone_number)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sms_notification_status ON sms_messages(notification_status)",
             [],
         )?;
         normalize_existing_sms_timestamps(&conn)?;
@@ -580,6 +611,15 @@ impl Database {
         Ok(result)
     }
 
+    /// 更新短信通知转发状态："pending", "success", "failed", "skipped"
+    pub fn update_sms_notification_status(&self, id: i64, status: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sms_messages SET notification_status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+    }
+
     /// 获取短信统计
     pub fn get_sms_stats(&self) -> Result<SmsStats> {
         let conn = self.conn.lock().unwrap();
@@ -588,7 +628,8 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM sms_messages", [], |row| row.get(0))?;
 
         let incoming: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sms_messages WHERE direction = 'incoming'",
+            "SELECT COUNT(*) FROM sms_messages
+             WHERE direction = 'incoming' AND status = 'received'",
             [],
             |row| row.get(0),
         )?;
@@ -599,10 +640,30 @@ impl Database {
             |row| row.get(0),
         )?;
 
+        let pushed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sms_messages
+             WHERE direction = 'incoming'
+               AND status = 'received'
+               AND notification_status = 'success'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let push_attempted: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sms_messages
+             WHERE direction = 'incoming'
+               AND status = 'received'
+               AND notification_status IN ('success', 'failed')",
+            [],
+            |row| row.get(0),
+        )?;
+
         Ok(SmsStats {
             total,
             incoming,
             outgoing,
+            pushed,
+            push_attempted,
         })
     }
 

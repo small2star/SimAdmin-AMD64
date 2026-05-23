@@ -398,6 +398,8 @@ export interface SmsStats {
   total: number
   incoming: number
   outgoing: number
+  pushed?: number
+  push_attempted?: number
 }
 
 export interface CallInfo {

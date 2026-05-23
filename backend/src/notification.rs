@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 use zbus::Connection;
 
 const BEIJING_UTC_OFFSET_SECONDS: i32 = 8 * 60 * 60;
@@ -93,18 +94,56 @@ impl NotificationSender {
     pub async fn forward_sms(&self, message: &SmsMessage) -> Result<(), String> {
         let config = self.get_config();
         let context = self.sms_template_context().await;
+        let mut attempted = false;
+        let mut delivered = false;
         let mut errors = Vec::new();
 
         for channel in all_channels() {
-            if let Err(err) = self
+            if !should_send_sms_to_channel(channel, &config) {
+                continue;
+            }
+
+            attempted = true;
+            match self
                 .send_sms_to_channel(channel, &config, message, &context, false)
                 .await
             {
-                errors.push(format!("{}: {}", channel.label(), err));
+                Ok(_) => delivered = true,
+                Err(err) => errors.push(format!("{}: {}", channel.label(), err)),
             }
         }
 
-        if errors.is_empty() {
+        let notification_status = if !attempted {
+            "skipped"
+        } else if delivered {
+            "success"
+        } else {
+            "failed"
+        };
+
+        if message.id > 0 {
+            if let Err(err) = self
+                .database
+                .update_sms_notification_status(message.id, notification_status)
+            {
+                warn!(
+                    error = %err,
+                    sms_id = message.id,
+                    notification_status = %notification_status,
+                    "Failed to update SMS notification status"
+                );
+            }
+        }
+
+        if delivered && !errors.is_empty() {
+            warn!(
+                sms_id = message.id,
+                errors = %errors.join("; "),
+                "SMS notification partially failed"
+            );
+        }
+
+        if errors.is_empty() || delivered {
             Ok(())
         } else {
             Err(errors.join("; "))
@@ -1397,6 +1436,20 @@ fn all_channels() -> [NotificationChannel; 9] {
 
 fn should_send_sms(config: &MessageChannelConfig, force: bool) -> bool {
     force || (config.enabled && config.forward_sms)
+}
+
+fn should_send_sms_to_channel(channel: NotificationChannel, config: &NotificationConfig) -> bool {
+    match channel {
+        NotificationChannel::Webhook => config.webhook.enabled && config.webhook.forward_sms,
+        NotificationChannel::Bark => should_send_sms(&config.bark.common, false),
+        NotificationChannel::PushPlus => should_send_sms(&config.pushplus.common, false),
+        NotificationChannel::WecomApp => should_send_sms(&config.wecom_app.common, false),
+        NotificationChannel::WecomRobot => should_send_sms(&config.wecom_robot.common, false),
+        NotificationChannel::DingtalkRobot => should_send_sms(&config.dingtalk_robot.common, false),
+        NotificationChannel::DingtalkApp => should_send_sms(&config.dingtalk_app.common, false),
+        NotificationChannel::FeishuRobot => should_send_sms(&config.feishu_robot.common, false),
+        NotificationChannel::Telegram => should_send_sms(&config.telegram.common, false),
+    }
 }
 
 fn should_send_call(config: &MessageChannelConfig, force: bool) -> bool {

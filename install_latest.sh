@@ -15,9 +15,14 @@ MODEM_RECOVERY_SERVICE_URL="${MODEM_RECOVERY_SERVICE_URL:-${RAW_BASE}/main/scrip
 ASSET_URL="${ASSET_URL:-}"
 ASSET_NAME="${ASSET_NAME:-simadmin.tar.gz}"
 SIMADMIN_INSTALL_LPAC="${SIMADMIN_INSTALL_LPAC:-1}"
-LPAC_RELEASE_BASE_URL="${LPAC_RELEASE_BASE_URL:-https://github.com/estkme-group/lpac/releases/latest/download}"
+LPAC_REPO="${LPAC_REPO:-estkme-group/lpac}"
+LPAC_RELEASE_BASE_URL="${LPAC_RELEASE_BASE_URL:-https://github.com/${LPAC_REPO}/releases/latest/download}"
+LPAC_LATEST_RELEASE_URL="${LPAC_LATEST_RELEASE_URL:-https://github.com/${LPAC_REPO}/releases/latest}"
 LPAC_COMPAT_RELEASE_BASE_URL="${LPAC_COMPAT_RELEASE_BASE_URL:-https://github.com/3899/SimAdmin/releases/download/lpac}"
+LPAC_COMPAT_MANIFEST_NAME="${LPAC_COMPAT_MANIFEST_NAME:-lpac.json}"
 LPAC_TARGET_ARCH="${LPAC_TARGET_ARCH:-}"
+LPAC_TARGET_VERSION="${LPAC_TARGET_VERSION:-}"
+LPAC_LATEST_RELEASE_API_URL="${LPAC_LATEST_RELEASE_API_URL:-https://api.github.com/repos/${LPAC_REPO}/releases/latest}"
 LPAC_ASSET_FLAVOR="${LPAC_ASSET_FLAVOR:-compat}"
 LPAC_ASSET_NAME="${LPAC_ASSET_NAME:-}"
 LPAC_ASSET_URL="${LPAC_ASSET_URL:-}"
@@ -48,7 +53,7 @@ download_with_proxies() {
   dst_path="$2"
 
   case "$src_url" in
-    https://github.com/*|https://raw.githubusercontent.com/*|https://objects.githubusercontent.com/*)
+    https://github.com/*|https://raw.githubusercontent.com/*|https://objects.githubusercontent.com/*|https://api.github.com/*)
       for proxy in $GH_PROXY $GH_PROXY_FALLBACKS ""; do
         url="${proxy}${src_url}"
         echo "    ${url}"
@@ -72,7 +77,7 @@ read_with_proxies() {
   src_url="$1"
 
   case "$src_url" in
-    https://github.com/*|https://raw.githubusercontent.com/*|https://objects.githubusercontent.com/*)
+    https://github.com/*|https://raw.githubusercontent.com/*|https://objects.githubusercontent.com/*|https://api.github.com/*)
       for proxy in $GH_PROXY $GH_PROXY_FALLBACKS ""; do
         url="${proxy}${src_url}"
         echo "    ${url}" >&2
@@ -250,6 +255,37 @@ version_le() {
   [ "$first" = "$1" ]
 }
 
+normalize_version_value() {
+  value="$1"
+  value="${value#refs/tags/}"
+  value="${value#tags/}"
+  value="${value#v}"
+  value="${value#V}"
+  printf '%s\n' "$value"
+}
+
+version_lt() {
+  left="$(normalize_version_value "$1")"
+  right="$(normalize_version_value "$2")"
+  [ -n "$left" ] || return 0
+  [ -n "$right" ] || return 1
+  [ "$left" = "$right" ] && return 1
+  version_le "$left" "$right"
+}
+
+version_token_from_text() {
+  printf '%s\n' "$1" \
+    | tr '",:{}[]()' '          ' \
+    | tr '[:space:]' '\n' \
+    | sed -nE '/^[vV]?[0-9]+(\.[0-9]+)+([-+][0-9A-Za-z._-]+)?$/p' \
+    | head -n 1
+}
+
+json_string_field() {
+  field="$1"
+  sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1
+}
+
 resolve_lpac_asset_name() {
   arch="$1"
 
@@ -324,7 +360,7 @@ PY
     return $?
   fi
 
-  # 使用 simadmin 自带的 zip 解压能力（无需任何外部依赖）
+  # Use simadmin's built-in zip extractor if external tools are unavailable.
   if [ -x "${INSTALL_DIR}/simadmin" ]; then
     echo "    using simadmin extract-zip (built-in)"
     "${INSTALL_DIR}/simadmin" extract-zip "$archive" "$target"
@@ -379,13 +415,19 @@ https://github.com/estkme-group/lpac
 EOF
 }
 
-lpac_binary_usable() {
-  lpac_home="$1"
-  if [ ! -x "${lpac_home}/lpac" ]; then
+lpac_env_prefix() {
+  lpac_path="$1"
+  lpac_home="$(dirname "$lpac_path")"
+  printf '%s\n' "${lpac_home}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+}
+
+lpac_binary_path_usable() {
+  lpac_path="$1"
+  if [ ! -x "$lpac_path" ]; then
     return 1
   fi
 
-  output=$(LD_LIBRARY_PATH="${lpac_home}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${lpac_home}/lpac" 2>&1 || true)
+  output=$(LD_LIBRARY_PATH="$(lpac_env_prefix "$lpac_path")" "$lpac_path" 2>&1 || true)
   case "$output" in
     *GLIBC_*|*No\ such\ file\ or\ directory*)
       return 1
@@ -393,6 +435,244 @@ lpac_binary_usable() {
   esac
 
   return 0
+}
+
+lpac_binary_usable() {
+  lpac_home="$1"
+  lpac_binary_path_usable "${lpac_home}/lpac"
+}
+
+lpac_command_version() {
+  lpac_path="$1"
+  [ -x "$lpac_path" ] || return 1
+
+  for arg in version --version -v; do
+    output="$(LD_LIBRARY_PATH="$(lpac_env_prefix "$lpac_path")" "$lpac_path" "$arg" 2>&1 || true)"
+    version="$(version_token_from_text "$output")"
+    if [ -n "$version" ]; then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+lpac_installed_version() {
+  lpac_path="$1"
+  lpac_home="$(dirname "$lpac_path")"
+
+  if [ -f "${lpac_home}/VERSION.txt" ]; then
+    version="$(version_token_from_text "$(cat "${lpac_home}/VERSION.txt")")"
+    if [ -n "$version" ]; then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  fi
+
+  if version="$(lpac_command_version "$lpac_path")"; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  if [ -f "${lpac_home}/SOURCE.txt" ]; then
+    version="$(version_token_from_text "$(cat "${lpac_home}/SOURCE.txt")")"
+    if [ -n "$version" ]; then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+lpac_release_version_from_url() {
+  url="$1"
+  tag="$(printf '%s\n' "$url" | sed -nE 's#^.*/releases/download/([^/]+)/.*#\1#p' | head -n 1)"
+  case "$tag" in
+    ""|latest)
+      return 1
+      ;;
+  esac
+
+  version="$(version_token_from_text "$tag")"
+  [ -n "$version" ] || return 1
+  printf '%s\n' "$version"
+}
+
+lpac_asset_name_from_url() {
+  url="$1"
+  asset_name="${url%%\?*}"
+  asset_name="${asset_name##*/}"
+  printf '%s\n' "$asset_name"
+}
+
+lpac_url_source() {
+  url="$1"
+  case "$url" in
+    "$LPAC_COMPAT_RELEASE_BASE_URL"/*|https://github.com/3899/SimAdmin/releases/download/lpac/*)
+      printf '%s\n' "compat"
+      ;;
+    "$LPAC_RELEASE_BASE_URL"/*|https://github.com/"$LPAC_REPO"/releases/latest/download/*|https://github.com/"$LPAC_REPO"/releases/download/*)
+      printf '%s\n' "official"
+      ;;
+    *)
+      printf '%s\n' "custom"
+      ;;
+  esac
+}
+
+compat_lpac_release_version() {
+  lpac_url="$1"
+  manifest_url="${LPAC_COMPAT_RELEASE_BASE_URL}/${LPAC_COMPAT_MANIFEST_NAME}"
+  manifest="$(read_with_proxies "$manifest_url" 2>/dev/null || true)"
+  [ -n "$manifest" ] || return 1
+
+  asset_name="$(lpac_asset_name_from_url "$lpac_url")"
+  if [ -n "$asset_name" ]; then
+    asset_record="$(printf '%s\n' "$manifest" \
+      | tr '\n' ' ' \
+      | sed 's/}[[:space:]]*,[[:space:]]*{/}\
+{/g' \
+      | grep "\"name\"[[:space:]]*:[[:space:]]*\"${asset_name}\"" \
+      | head -n 1 || true)"
+    version="$(printf '%s\n' "$asset_record" | json_string_field version)"
+    version="$(version_token_from_text "$version")"
+    if [ -n "$version" ]; then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  fi
+
+  version="$(printf '%s\n' "$manifest" | json_string_field version)"
+  version="$(version_token_from_text "$version")"
+  [ -n "$version" ] || return 1
+  printf '%s\n' "$version"
+}
+
+official_lpac_release_version() {
+  lpac_url="$1"
+
+  version="$(lpac_release_version_from_url "$lpac_url" || true)"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  json="$(read_with_proxies "$LPAC_LATEST_RELEASE_API_URL" 2>/dev/null || true)"
+  tag="$(printf '%s\n' "$json" | json_string_field tag_name)"
+  version="$(version_token_from_text "$tag")"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  html="$(read_with_proxies "$LPAC_LATEST_RELEASE_URL" 2>/dev/null || true)"
+  tag="$(printf '%s\n' "$html" \
+    | sed -nE 's#.*releases/(tag|expanded_assets)/([vV]?[0-9]+(\.[0-9]+)+[^"<>/?[:space:]]*).*#\2#p' \
+    | head -n 1)"
+  version="$(version_token_from_text "$tag")"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_lpac_target_version() {
+  lpac_url="$1"
+
+  if [ -n "$LPAC_TARGET_VERSION" ]; then
+    version="$(version_token_from_text "$LPAC_TARGET_VERSION")"
+    [ -n "$version" ] || return 1
+    LPAC_TARGET_RELEASE_SOURCE="override"
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  LPAC_TARGET_RELEASE_SOURCE="$(lpac_url_source "$lpac_url")"
+  case "$LPAC_TARGET_RELEASE_SOURCE" in
+    compat)
+      compat_lpac_release_version "$lpac_url"
+      ;;
+    official)
+      official_lpac_release_version "$lpac_url"
+      ;;
+    *)
+      for candidate in "$lpac_url" "$LPAC_ASSET_URL" "$LPAC_RELEASE_BASE_URL"; do
+        version="$(lpac_release_version_from_url "$candidate" || true)"
+        if [ -n "$version" ]; then
+          printf '%s\n' "$version"
+          return 0
+        fi
+      done
+
+      LPAC_TARGET_RELEASE_SOURCE="official"
+      official_lpac_release_version "$LPAC_RELEASE_BASE_URL"
+      ;;
+  esac
+}
+
+find_current_lpac_path() {
+  private_path="${INSTALL_DIR}/lpac/lpac"
+  if [ -e "$private_path" ] || [ -d "${INSTALL_DIR}/lpac" ]; then
+    printf '%s\n' "$private_path"
+    return 0
+  fi
+
+  if command_path="$(command -v lpac 2>/dev/null)"; then
+    printf '%s\n' "$command_path"
+    return 0
+  fi
+
+  return 1
+}
+
+write_lpac_version_file() {
+  lpac_home="$1"
+  version="$2"
+  [ -n "$version" ] || return 0
+  printf '%s\n' "$version" > "${lpac_home}/VERSION.txt"
+  chmod 0644 "${lpac_home}/VERSION.txt" || true
+}
+
+lpac_install_needed() {
+  lpac_path="$1"
+  lpac_url="$2"
+  LPAC_INSTALL_REASON=""
+  LPAC_TARGET_RELEASE_VERSION=""
+  LPAC_TARGET_RELEASE_SOURCE=""
+
+  if [ -z "$lpac_path" ] || [ ! -x "$lpac_path" ]; then
+    LPAC_INSTALL_REASON="not installed"
+    return 0
+  fi
+
+  if ! lpac_binary_path_usable "$lpac_path"; then
+    LPAC_INSTALL_REASON="installed lpac is not usable"
+    return 0
+  fi
+
+  current_version="$(lpac_installed_version "$lpac_path" || true)"
+  if [ -z "$current_version" ]; then
+    LPAC_INSTALL_REASON="installed version is unknown"
+    return 0
+  fi
+
+  LPAC_TARGET_RELEASE_VERSION="$(resolve_lpac_target_version "$lpac_url" || true)"
+  if [ -z "$LPAC_TARGET_RELEASE_VERSION" ]; then
+    LPAC_INSTALL_REASON="latest version could not be verified"
+    return 0
+  fi
+
+  if version_lt "$current_version" "$LPAC_TARGET_RELEASE_VERSION"; then
+    LPAC_INSTALL_REASON="installed ${current_version}, ${LPAC_TARGET_RELEASE_SOURCE:-target} ${LPAC_TARGET_RELEASE_VERSION}"
+    return 0
+  fi
+
+  echo "==> skipping lpac install (installed ${current_version}, ${LPAC_TARGET_RELEASE_SOURCE:-target} ${LPAC_TARGET_RELEASE_VERSION})"
+  return 1
 }
 
 install_lpac() {
@@ -417,7 +697,16 @@ install_lpac() {
     return 0
   fi
 
-  echo "==> installing lpac for ${lpac_arch}"
+  current_lpac_path="$(find_current_lpac_path || true)"
+  if ! lpac_install_needed "$current_lpac_path" "$lpac_url"; then
+    return 0
+  fi
+
+  if [ -z "$LPAC_TARGET_RELEASE_VERSION" ]; then
+    LPAC_TARGET_RELEASE_VERSION="$(resolve_lpac_target_version "$lpac_url" || true)"
+  fi
+
+  echo "==> installing lpac for ${lpac_arch} (${LPAC_INSTALL_REASON})"
   if ! download_with_proxies "$lpac_url" "$lpac_archive"; then
     echo "warning: failed to download lpac, keeping existing lpac if present" >&2
     return 0
@@ -429,8 +718,17 @@ install_lpac() {
   fi
 
   if copy_lpac_tree "$lpac_extract" "$lpac_dst" "$lpac_url"; then
+    detected_version="$(lpac_command_version "${lpac_dst}/lpac" || true)"
+    if [ -z "$detected_version" ]; then
+      detected_version="$LPAC_TARGET_RELEASE_VERSION"
+    fi
+    write_lpac_version_file "$lpac_dst" "$detected_version"
     if lpac_binary_usable "$lpac_dst"; then
-      echo "==> lpac installed to ${lpac_dst}"
+      if [ -n "$detected_version" ]; then
+        echo "==> lpac ${detected_version} installed to ${lpac_dst}"
+      else
+        echo "==> lpac installed to ${lpac_dst}"
+      fi
     else
       echo "warning: lpac was installed but may not be executable on this device; check glibc/architecture compatibility" >&2
     fi

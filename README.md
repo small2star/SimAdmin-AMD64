@@ -345,7 +345,7 @@ curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/uninstall.sh \
 - `iptables` / `ip6tables`，用于只读网络诊断；SimAdmin 不会自动清空宿主机防火墙规则。
 - `tar`，OTA 安装必需。
 - `unzip`、`busybox unzip` 或 `python3`，用于安装脚本解压自动下载的 `lpac`；`unzip` 也用于上传 zip 格式 OTA 包。
-- eSIM 管理依赖 `lpac`。使用 `install_latest.sh` 安装时会按设备架构自动下载官方最新匹配版本到私有目录；普通 SIM 模式下不会调用。
+- eSIM 管理依赖 `lpac`。使用 `install_latest.sh` 安装时会先校验设备上的 `lpac`，缺失、不可用或版本较旧时才按设备架构下载最新匹配版本；普通 SIM 模式下不会调用。
 
 ### 安装路径
 
@@ -370,7 +370,7 @@ curl -fsSL https://raw.githubusercontent.com/3899/SimAdmin/main/uninstall.sh \
 
 普通 SIM 模式下，侧边栏隐藏 eSIM 管理入口，`/api/esim/*` 返回 `403`，前端不会下载 eSIM 页面 chunk，后端也不会主动调用 `lpac`。切换到 eSIM 模式后，只有打开 eSIM 管理页面或执行 Profile 操作时才会按需调用 `lpac chip info`、`lpac profile list`、`lpac profile enable`、`lpac profile nickname` 和 `lpac profile delete`。
 
-OTA 包不内置固定架构的 `lpac`。`install_latest.sh` 会在目标设备上根据 `uname -m` 和 glibc 版本优先选择兼容资产，安装到 `/opt/simadmin/lpac/lpac`；后端优先使用该私有路径，找不到时再回退到 PATH 中的 `lpac`。如需跳过自动安装，可设置 `SIMADMIN_INSTALL_LPAC=0`；如需固定版本或使用镜像，可设置 `LPAC_ASSET_URL`、`LPAC_ASSET_NAME`、`LPAC_RELEASE_BASE_URL` 或 `LPAC_COMPAT_RELEASE_BASE_URL`。仅手动上传 OTA 包不会自动安装或更新 `lpac`，首次部署建议先执行安装脚本一次。
+OTA 包不内置固定架构的 `lpac`。`install_latest.sh` 会在目标设备上根据 `uname -m` 和 glibc 版本优先选择兼容资产，已安装最新版本时跳过，否则安装到 `/opt/simadmin/lpac/lpac`；兼容资产按 SimAdmin 的 `lpac` release manifest 比对版本，官方资产按 `estkme-group/lpac` latest release 比对版本。后端优先使用该私有路径，找不到时再回退到 PATH 中的 `lpac`。如需跳过自动安装，可设置 `SIMADMIN_INSTALL_LPAC=0`；如需固定版本或使用镜像，可设置 `LPAC_TARGET_VERSION`、`LPAC_ASSET_URL`、`LPAC_ASSET_NAME`、`LPAC_RELEASE_BASE_URL` 或 `LPAC_COMPAT_RELEASE_BASE_URL`。仅手动上传 OTA 包不会自动安装或更新 `lpac`，首次部署建议先执行安装脚本一次。
 
 如果设备已经通过 OTA 更新到支持 eSIM 的版本，但还没有安装 `lpac`，eSIM 管理页面会显示状态提示并提供“安装/修复 lpac”入口。修复过程只在 eSIM 模式下由用户手动触发，会根据设备 `uname -m` 和 glibc 版本优先下载兼容资产，失败后再尝试官方资产，并支持选择 GitHub 代理前缀；页面内修复由后端内置 ZIP 解压完成。
 
@@ -427,6 +427,18 @@ journalctl -u simadmin -f
 - OTA 上传、在线下载、校验、替换二进制和前端资源。
 
 ## 🚀 版本更新记录
+
+### 📌 v1.0.8
+
+#### ✨ 新增功能
+
+- 短信管理加入常驻搜索框，支持按号码、短信内容检索会话；匹配项可自动高亮检索关键词。
+- 短信统计新增推送数据统计，直观展示推送成功、尝试推送条数。
+
+#### 💫 体验优化
+
+- 精简短信统计面板，隐藏总计数据，保留收发统计，新增独立推送统计卡片，支持悬停查看数据说明。
+- 持久化存储短信转发状态，过滤无效异常数据，保证推送统计结果准确可靠。
 
 ### 📌 v1.0.7
 
@@ -959,7 +971,7 @@ www/
 
 ```json
 {
-  "version": "1.0.5",
+  "version": "1.0.8",
   "commit": "abcdef0",
   "build_time": "2026-05-06T00:00:00Z",
   "binary_md5": "md5-of-binary",

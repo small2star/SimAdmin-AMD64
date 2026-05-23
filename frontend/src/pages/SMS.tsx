@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import {
   Box,
   Card,
@@ -40,6 +40,7 @@ import {
   DeleteOutline,
   SelectAll,
   Close,
+  Search,
 } from '@mui/icons-material'
 import { api, type SmsMessage, type SmsStats } from '../api/current'
 
@@ -48,6 +49,10 @@ interface ConversationGroup {
   messages: SmsMessage[]
   lastMessage: SmsMessage
   unreadCount: number
+}
+
+type ConversationSearchResult = ConversationGroup & {
+  matchedMessage: SmsMessage | null
 }
 
 type DeleteTarget =
@@ -94,6 +99,52 @@ function buildConversations(msgs: SmsMessage[]): ConversationGroup[] {
   return conversationList
 }
 
+function includesSearchText(value: string, query: string) {
+  return value.toLocaleLowerCase().includes(query.toLocaleLowerCase())
+}
+
+function renderHighlightedText(text: string, query: string): ReactNode {
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) {
+    return text
+  }
+
+  const lowerText = text.toLocaleLowerCase()
+  const lowerQuery = trimmedQuery.toLocaleLowerCase()
+  const nodes: ReactNode[] = []
+  let cursor = 0
+  let matchIndex = lowerText.indexOf(lowerQuery)
+
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) {
+      nodes.push(text.slice(cursor, matchIndex))
+    }
+    const end = matchIndex + trimmedQuery.length
+    nodes.push(
+      <Box
+        key={`${matchIndex}-${end}`}
+        component="mark"
+        sx={{
+          px: 0.25,
+          borderRadius: 0.5,
+          bgcolor: '#1296DB',
+          color: 'common.white',
+        }}
+      >
+        {text.slice(matchIndex, end)}
+      </Box>,
+    )
+    cursor = end
+    matchIndex = lowerText.indexOf(lowerQuery, cursor)
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor))
+  }
+
+  return nodes
+}
+
 export default function SMSPage() {
   const isMobile = useMediaQuery<Theme>((theme: Theme) => theme.breakpoints.down('md'))
 
@@ -114,6 +165,7 @@ export default function SMSPage() {
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null)
   const [conversationMessages, setConversationMessages] = useState<SmsMessage[]>([])
   const [conversationLoading, setConversationLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
 
   // 批量管理状态
   const [batchMode, setBatchMode] = useState(false)
@@ -129,6 +181,15 @@ export default function SMSPage() {
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
+
+  const scrollToMessage = useCallback((messageId: number) => {
+    const target = document.getElementById(`sms-message-${messageId}`)
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    scrollToBottom()
+  }, [scrollToBottom])
 
   const fetchMessages = useCallback(async (isBackground = false) => {
     if (!isBackground) {
@@ -154,7 +215,7 @@ export default function SMSPage() {
     }
   }, [])
 
-  const fetchConversation = useCallback(async (phone: string) => {
+  const fetchConversation = useCallback(async (phone: string, scrollTargetId?: number) => {
     setConversationLoading(true)
     try {
       const response = await api.getSmsConversation({ phone_number: phone, limit: 1000 })
@@ -163,7 +224,13 @@ export default function SMSPage() {
           (a, b) => smsTimestampMillis(a.timestamp) - smsTimestampMillis(b.timestamp),
         )
         setConversationMessages(sorted)
-        setTimeout(scrollToBottom, 100)
+        setTimeout(() => {
+          if (scrollTargetId !== undefined) {
+            scrollToMessage(scrollTargetId)
+          } else {
+            scrollToBottom()
+          }
+        }, 100)
       }
     } catch {
       const localMsgs = messages.filter((m) => m.phone_number === phone)
@@ -171,11 +238,17 @@ export default function SMSPage() {
         (a, b) => smsTimestampMillis(a.timestamp) - smsTimestampMillis(b.timestamp),
       )
       setConversationMessages(sorted)
-      setTimeout(scrollToBottom, 100)
+      setTimeout(() => {
+        if (scrollTargetId !== undefined) {
+          scrollToMessage(scrollTargetId)
+        } else {
+          scrollToBottom()
+        }
+      }, 100)
     } finally {
       setConversationLoading(false)
     }
-  }, [messages, scrollToBottom])
+  }, [messages, scrollToBottom, scrollToMessage])
 
   const fetchStats = useCallback(async () => {
     try {
@@ -208,14 +281,38 @@ export default function SMSPage() {
     return map
   }, [messages, conversationMessages])
 
+  const searchTerm = searchQuery.trim()
+
+  const visibleConversations = useMemo<ConversationSearchResult[]>(() => {
+    if (!searchTerm) {
+      return conversations.map((conv) => ({ ...conv, matchedMessage: null }))
+    }
+
+    return conversations
+      .map((conv) => {
+        const phoneMatched = includesSearchText(conv.phoneNumber, searchTerm)
+        const matchedMessage = conv.messages.find((msg) => includesSearchText(msg.content, searchTerm)) ?? null
+
+        if (!phoneMatched && !matchedMessage) {
+          return null
+        }
+
+        return {
+          ...conv,
+          matchedMessage,
+        }
+      })
+      .filter((conv): conv is ConversationSearchResult => conv !== null)
+  }, [conversations, searchTerm])
+
   const batchSelection = useMemo(() => {
-    const visiblePhones = new Set(conversations.map((conv) => conv.phoneNumber))
+    const visiblePhones = new Set(visibleConversations.map((conv) => conv.phoneNumber))
     const phoneNumbers = Array.from(selectedConversationPhones).filter((phone) => visiblePhones.has(phone))
     const phoneNumberSet = new Set(phoneNumbers)
     const selectedConversationNumbers = new Set(phoneNumbers)
     let messageCount = 0
 
-    conversations.forEach((conv) => {
+    visibleConversations.forEach((conv) => {
       if (phoneNumberSet.has(conv.phoneNumber)) {
         messageCount += conv.messages.length
       }
@@ -237,13 +334,15 @@ export default function SMSPage() {
       conversationCount: selectedConversationNumbers.size,
       messageCount,
     }
-  }, [conversations, messageById, selectedConversationPhones, selectedMessageIds])
+  }, [visibleConversations, messageById, selectedConversationPhones, selectedMessageIds])
 
   const hasBatchSelection = batchSelection.messageCount > 0
   const batchSelectionText = `已选 ${batchSelection.conversationCount} 个对话共 ${batchSelection.messageCount}条短信`
-  const smsStats = stats ?? { total: 0, incoming: 0, outgoing: 0 }
-  const allConversationsSelected = conversations.length > 0
-    && conversations.every((conv) => selectedConversationPhones.has(conv.phoneNumber))
+  const smsStats = stats ?? { total: 0, incoming: 0, outgoing: 0, pushed: 0, push_attempted: 0 }
+  const pushCount = smsStats.pushed ?? 0
+  const pushAttemptedCount = smsStats.push_attempted ?? 0
+  const allConversationsSelected = visibleConversations.length > 0
+    && visibleConversations.every((conv) => selectedConversationPhones.has(conv.phoneNumber))
   const currentMessagesSomeSelected = conversationMessages.some(
     (msg) => selectedConversationPhones.has(msg.phone_number) || selectedMessageIds.has(msg.id),
   )
@@ -264,10 +363,10 @@ export default function SMSPage() {
     resetBatchSelection()
   }
 
-  const handleSelectConversation = (phone: string) => {
+  const handleSelectConversation = (phone: string, scrollTargetId?: number) => {
     setSelectedConversation(phone)
     setPhoneNumber(phone)
-    void fetchConversation(phone)
+    void fetchConversation(phone, scrollTargetId)
   }
 
   const handleBackToList = () => {
@@ -350,7 +449,7 @@ export default function SMSPage() {
       resetBatchSelection()
       return
     }
-    setSelectedConversationPhones(new Set(conversations.map((conv) => conv.phoneNumber)))
+    setSelectedConversationPhones(new Set(visibleConversations.map((conv) => conv.phoneNumber)))
     setSelectedMessageIds(new Set())
   }
 
@@ -605,10 +704,10 @@ export default function SMSPage() {
   const conversationListContent = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Box display="flex" gap={1} p={2} flexWrap="wrap">
-        <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
+        {/* <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
           <Typography variant="h6" color="primary" fontWeight={600}>{smsStats.total}</Typography>
           <Typography variant="caption" color="text.secondary">总计</Typography>
-        </Paper>
+        </Paper> */}
         <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
           <Typography variant="h6" color="success.main" fontWeight={600}>{smsStats.incoming}</Typography>
           <Typography variant="caption" color="text.secondary">接收</Typography>
@@ -617,11 +716,27 @@ export default function SMSPage() {
           <Typography variant="h6" color="info.main" fontWeight={600}>{smsStats.outgoing}</Typography>
           <Typography variant="caption" color="text.secondary">发送</Typography>
         </Paper>
+        <Paper sx={{ p: 1, flex: 1, minWidth: 60, textAlign: 'center' }}>
+          <Tooltip title={`推送成功 ${pushCount} 条，尝试推送 ${pushAttemptedCount} 条`}>
+            <Typography variant="h6" component="div">
+              <Box component="span" sx={{ color: 'warning.main', fontWeight: 600 }}>
+                {pushCount}
+              </Box>
+              <Box component="span" sx={{ mx: 0.5, color: 'text.secondary', fontWeight: 400 }}>
+                /
+              </Box>
+              <Box component="span" sx={{ color: 'success.main', fontWeight: 600 }}>
+                {pushAttemptedCount}
+              </Box>
+            </Typography>
+          </Tooltip>
+          <Typography variant="caption" color="text.secondary">推送</Typography>
+        </Paper>
       </Box>
 
       <Box display="flex" justifyContent="space-between" alignItems="center" px={2} pb={1} gap={1}>
         <Typography variant="subtitle1" fontWeight={600}>
-          对话 ({conversations.length})
+          对话 ({visibleConversations.length})
         </Typography>
         <Box display="flex" gap={0.5} alignItems="center">
           {batchMode ? (
@@ -630,7 +745,7 @@ export default function SMSPage() {
                 size="small"
                 startIcon={<SelectAll />}
                 onClick={toggleAllConversations}
-                disabled={conversations.length === 0}
+                disabled={visibleConversations.length === 0}
               >
                 {allConversationsSelected ? '取消全选' : '全选对话'}
               </Button>
@@ -662,6 +777,54 @@ export default function SMSPage() {
         </Box>
       </Box>
 
+      <Box px={2} pb={1}>
+        <TextField
+          fullWidth
+          size="small"
+          value={searchQuery}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setSearchQuery(event.target.value)}
+          onFocus={() => { inputFocusedRef.current = true }}
+          onBlur={() => { inputFocusedRef.current = false }}
+          placeholder="搜索联系人或内容..."
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search fontSize="small" />
+                </InputAdornment>
+              ),
+              endAdornment: searchQuery ? (
+                <InputAdornment position="end">
+                  <IconButton
+                    size="small"
+                    aria-label="清空搜索"
+                    onClick={() => setSearchQuery('')}
+                    edge="end"
+                  >
+                    <Close fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            },
+          }}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              bgcolor: 'transparent',
+              borderRadius: 1.5,
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: 'divider',
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: 'text.disabled',
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderColor: '#1296DB',
+              },
+            },
+          }}
+        />
+      </Box>
+
       {renderBatchSelectionBar()}
 
       <Divider />
@@ -670,10 +833,13 @@ export default function SMSPage() {
         <Box display="flex" justifyContent="center" py={4}><CircularProgress /></Box>
       ) : conversations.length === 0 ? (
         <Box p={2}><Alert severity="info">暂无对话，点击 + 开始新对话</Alert></Box>
+      ) : visibleConversations.length === 0 ? (
+        <Box p={2}><Alert severity="info">未找到匹配的对话</Alert></Box>
       ) : (
         <List sx={{ flex: 1, overflow: 'auto' }}>
-          {conversations.map((conv, idx) => {
+          {visibleConversations.map((conv, idx) => {
             const selectionState = getConversationMessageSelectionState(conv)
+            const displayMessage = conv.matchedMessage ?? conv.lastMessage
             return (
               <Box
                 key={conv.phoneNumber}
@@ -684,7 +850,7 @@ export default function SMSPage() {
                 }}
               >
                 <ListItemButton
-                  onClick={() => handleSelectConversation(conv.phoneNumber)}
+                  onClick={() => handleSelectConversation(conv.phoneNumber, conv.matchedMessage?.id)}
                   selected={selectedConversation === conv.phoneNumber}
                   sx={{ gap: 1 }}
                 >
@@ -703,18 +869,21 @@ export default function SMSPage() {
                   <ListItemText
                     primary={
                       <Box display="flex" alignItems="center" gap={1}>
-                        <Typography fontWeight={600}>{conv.phoneNumber}</Typography>
+                        <Typography fontWeight={600}>
+                          {renderHighlightedText(conv.phoneNumber, searchTerm)}
+                        </Typography>
                         <Badge badgeContent={conv.messages.length} color="primary" max={99} />
                       </Box>
                     }
                     secondary={
                       <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 180 }}>
-                        {conv.lastMessage.direction === 'outgoing' ? '你: ' : ''}{conv.lastMessage.content}
+                        {displayMessage.direction === 'outgoing' ? '你: ' : ''}
+                        {renderHighlightedText(displayMessage.content, searchTerm)}
                       </Typography>
                     }
                   />
                   <Typography variant="caption" color="text.secondary" sx={{ minWidth: 44, textAlign: 'right' }}>
-                    {formatShortTime(conv.lastMessage.timestamp)}
+                    {formatShortTime(displayMessage.timestamp)}
                   </Typography>
                   {!batchMode && (
                     <Tooltip title="删除对话">
@@ -739,7 +908,7 @@ export default function SMSPage() {
                     </Tooltip>
                   )}
                 </ListItemButton>
-                {idx < conversations.length - 1 && <Divider />}
+                {idx < visibleConversations.length - 1 && <Divider />}
               </Box>
             )
           })}
@@ -802,6 +971,7 @@ export default function SMSPage() {
             {conversationMessages.map((msg, idx) => (
               <Box
                 key={msg.id || idx}
+                id={`sms-message-${msg.id}`}
                 display="flex"
                 justifyContent={msg.direction === 'outgoing' ? 'flex-end' : 'flex-start'}
                 alignItems="center"
@@ -841,7 +1011,7 @@ export default function SMSPage() {
                   }}
                 >
                   <Typography variant="body2" sx={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                    {msg.content}
+                    {renderHighlightedText(msg.content, searchTerm)}
                   </Typography>
                   <Box display="flex" alignItems="center" justifyContent="flex-end" gap={0.5} mt={0.5}>
                     <Typography
