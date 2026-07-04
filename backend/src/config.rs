@@ -200,6 +200,46 @@ pub struct TelegramConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerChan3Config {
+    #[serde(flatten)]
+    pub common: MessageChannelConfig,
+    #[serde(default)]
+    pub send_key: String,
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub openid: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailConfig {
+    #[serde(flatten)]
+    pub common: MessageChannelConfig,
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default = "default_smtp_security")]
+    pub smtp_security: String,
+    #[serde(default, alias = "allow_insecure_connections")]
+    pub allow_insecure_tls: bool,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub sender_address: String,
+    #[serde(default)]
+    pub sender_name: String,
+    #[serde(default, alias = "receiver_address")]
+    pub receiver_addresses: String,
+    #[serde(default = "default_email_message_format")]
+    pub message_format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LegacyNotificationConfig {
     #[serde(default)]
     pub webhook: WebhookConfig,
@@ -219,6 +259,10 @@ pub struct LegacyNotificationConfig {
     pub feishu_robot: FeishuRobotConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub serverchan3: ServerChan3Config,
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +278,9 @@ pub enum NotificationChannel {
     DingtalkApp,
     FeishuRobot,
     Telegram,
+    Email,
+    #[serde(rename = "serverchan3", alias = "server_chan3")]
+    ServerChan3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,6 +745,18 @@ fn default_dingtalk_msg_key() -> String {
     "sampleText".to_string()
 }
 
+fn default_smtp_port() -> u16 {
+    465
+}
+
+fn default_smtp_security() -> String {
+    "implicit_tls".to_string()
+}
+
+fn default_email_message_format() -> String {
+    "plain".to_string()
+}
+
 impl Default for WebhookConfig {
     fn default() -> Self {
         Self {
@@ -841,6 +900,36 @@ impl Default for TelegramConfig {
     }
 }
 
+impl Default for ServerChan3Config {
+    fn default() -> Self {
+        Self {
+            common: MessageChannelConfig::default(),
+            send_key: String::new(),
+            uid: String::new(),
+            channel: String::new(),
+            openid: String::new(),
+        }
+    }
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            common: MessageChannelConfig::default(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_security: default_smtp_security(),
+            allow_insecure_tls: false,
+            username: String::new(),
+            password: String::new(),
+            sender_address: String::new(),
+            sender_name: String::new(),
+            receiver_addresses: String::new(),
+            message_format: default_email_message_format(),
+        }
+    }
+}
+
 impl Default for LegacyNotificationConfig {
     fn default() -> Self {
         Self {
@@ -853,6 +942,8 @@ impl Default for LegacyNotificationConfig {
             dingtalk_app: DingtalkAppConfig::default(),
             feishu_robot: FeishuRobotConfig::default(),
             telegram: TelegramConfig::default(),
+            serverchan3: ServerChan3Config::default(),
+            email: EmailConfig::default(),
         }
     }
 }
@@ -947,6 +1038,8 @@ fn channel_label(channel: NotificationChannel) -> &'static str {
         NotificationChannel::DingtalkApp => "钉钉企业内机器人",
         NotificationChannel::FeishuRobot => "飞书机器人",
         NotificationChannel::Telegram => "Telegram 机器人",
+        NotificationChannel::Email => "Email",
+        NotificationChannel::ServerChan3 => "Server酱3",
     }
 }
 
@@ -1059,6 +1152,27 @@ fn legacy_channel_migrations(legacy: &LegacyNotificationConfig) -> Vec<LegacyCha
         legacy.telegram.common.enabled
             || !legacy.telegram.bot_token.trim().is_empty()
             || !legacy.telegram.chat_id.trim().is_empty(),
+    );
+    push_message_channel_migration(
+        &mut channels,
+        NotificationChannel::ServerChan3,
+        "serverchan3-1",
+        &legacy.serverchan3.common,
+        &legacy.serverchan3,
+        legacy.serverchan3.common.enabled
+            || !legacy.serverchan3.send_key.trim().is_empty()
+            || !legacy.serverchan3.uid.trim().is_empty(),
+    );
+    push_message_channel_migration(
+        &mut channels,
+        NotificationChannel::Email,
+        "email-1",
+        &legacy.email.common,
+        &legacy.email,
+        legacy.email.common.enabled
+            || !legacy.email.smtp_host.trim().is_empty()
+            || !legacy.email.sender_address.trim().is_empty()
+            || !legacy.email.receiver_addresses.trim().is_empty(),
     );
 
     channels
@@ -1327,6 +1441,37 @@ mod tests {
             serde_json::to_string(&NotificationChannel::PushPlus).unwrap(),
             r#""pushplus""#
         );
+    }
+
+    #[test]
+    fn notification_channel_accepts_email_and_serverchan3_keys() {
+        assert!(matches!(
+            serde_json::from_str::<NotificationChannel>(r#""email""#).unwrap(),
+            NotificationChannel::Email
+        ));
+        assert!(matches!(
+            serde_json::from_str::<NotificationChannel>(r#""serverchan3""#).unwrap(),
+            NotificationChannel::ServerChan3
+        ));
+        assert_eq!(
+            serde_json::to_string(&NotificationChannel::Email).unwrap(),
+            r#""email""#
+        );
+        assert_eq!(
+            serde_json::to_string(&NotificationChannel::ServerChan3).unwrap(),
+            r#""serverchan3""#
+        );
+    }
+
+    #[test]
+    fn email_config_accepts_legacy_receiver_address() {
+        let config: EmailConfig = serde_json::from_str(
+            r#"{"smtp_host":"smtp.example.com","receiver_address":"admin@example.com"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.smtp_security, "implicit_tls");
+        assert_eq!(config.receiver_addresses, "admin@example.com");
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use crate::config::{
-    BarkConfig, ConfigManager, DingtalkAppConfig, DingtalkRobotConfig, FeishuRobotConfig,
-    LegacyNotificationConfig, MatcherOperator, MessageChannelConfig, NotificationChannel,
-    NotificationChannelInstance, NotificationConfig, NotificationEventType, NotificationRule,
-    PushPlusConfig, QuietHoursSchedule, TelegramConfig, WebhookConfig, WecomAppConfig,
-    WecomRobotConfig,
+    BarkConfig, ConfigManager, DingtalkAppConfig, DingtalkRobotConfig, EmailConfig,
+    FeishuRobotConfig, LegacyNotificationConfig, MatcherOperator, MessageChannelConfig,
+    NotificationChannel, NotificationChannelInstance, NotificationConfig, NotificationEventType,
+    NotificationRule, PushPlusConfig, QuietHoursSchedule, ServerChan3Config, TelegramConfig,
+    WebhookConfig, WecomAppConfig, WecomRobotConfig,
 };
 use crate::db::{
     CallRecord, Database, NewNotificationQueueItem, NotificationQueueEntry, SmsMessage,
@@ -17,11 +17,15 @@ use base64::{engine::general_purpose, Engine as _};
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, FixedOffset, NaiveDateTime, Timelike, Utc,
 };
+use lettre::message::{Mailbox, SinglePart};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::{Client, StatusCode};
 use ring::hmac;
 use serde::de::DeserializeOwned;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -990,6 +994,16 @@ impl NotificationSender {
                 let config = parse_instance_config::<TelegramConfig>(channel)?;
                 self.send_telegram_text(&config, text.to_string()).await
             }
+            NotificationChannel::Email => {
+                let config = parse_instance_config::<EmailConfig>(channel)?;
+                self.send_email_message(&config, title.to_string(), text.to_string())
+                    .await
+            }
+            NotificationChannel::ServerChan3 => {
+                let config = parse_instance_config::<ServerChan3Config>(channel)?;
+                self.send_serverchan3_message(&config, title.to_string(), text.to_string())
+                    .await
+            }
         }
     }
 
@@ -1031,6 +1045,8 @@ impl NotificationSender {
             NotificationChannel::Telegram => {
                 self.send_telegram_call(&config.telegram, call, force).await
             }
+            NotificationChannel::Email => Ok("Email skipped".to_string()),
+            NotificationChannel::ServerChan3 => Ok("Server酱3 skipped".to_string()),
         }
     }
 
@@ -1063,6 +1079,8 @@ impl NotificationSender {
                     .await
             }
             NotificationChannel::Telegram => self.send_telegram_ddns(&config.telegram, event).await,
+            NotificationChannel::Email => Ok("Email skipped".to_string()),
+            NotificationChannel::ServerChan3 => Ok("Server酱3 skipped".to_string()),
         }
     }
 
@@ -1106,6 +1124,8 @@ impl NotificationSender {
                 self.send_telegram_version_update(&config.telegram, event)
                     .await
             }
+            NotificationChannel::Email => Ok("Email skipped".to_string()),
+            NotificationChannel::ServerChan3 => Ok("Server酱3 skipped".to_string()),
         }
     }
 
@@ -2128,6 +2148,51 @@ impl NotificationSender {
             .await
     }
 
+    async fn send_serverchan3_message(
+        &self,
+        config: &ServerChan3Config,
+        title: String,
+        desp: String,
+    ) -> Result<String, String> {
+        let url = serverchan3_url(config)?;
+        let form = serverchan3_form_payload(config, &title, &desp);
+        let response = self
+            .client
+            .post(&url)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send Server酱3 message: {}", e))?;
+
+        serverchan3_response_result(response.status(), response.text().await.unwrap_or_default())
+    }
+
+    async fn send_email_message(
+        &self,
+        config: &EmailConfig,
+        subject: String,
+        body: String,
+    ) -> Result<String, String> {
+        if config.smtp_host.trim().is_empty() {
+            return Err("SMTP 服务器未配置".to_string());
+        }
+        if config.sender_address.trim().is_empty() {
+            return Err("发件人邮箱未配置".to_string());
+        }
+
+        let sender = mailbox_from_config(&config.sender_address, &config.sender_name, "发件人")?;
+        let receivers = email_receivers_from_config(&config.receiver_addresses)?;
+        let message = build_email_message(config, sender, receivers, &subject, &body)?;
+        let mailer = build_email_transport(config)?;
+
+        mailer
+            .send(message)
+            .await
+            .map_err(|err| format!("Email 发送失败：{err}"))?;
+
+        Ok("Email test successful".to_string())
+    }
+
     async fn post_json(&self, label: &str, url: &str, payload: Value) -> Result<String, String> {
         let response = self
             .client
@@ -2153,6 +2218,196 @@ where
     }
     serde_json::from_value(channel.config.clone())
         .map_err(|err| format!("Failed to parse {} channel config: {}", channel.name, err))
+}
+
+fn serverchan3_url(config: &ServerChan3Config) -> Result<String, String> {
+    let send_key = config.send_key.trim();
+    if send_key.is_empty() {
+        return Err("Server酱3 SendKey 未配置".to_string());
+    }
+    let uid = serverchan3_uid(config)
+        .ok_or_else(|| "Server酱3 UID 未配置，且无法从 SendKey 自动解析".to_string())?;
+    if !is_valid_serverchan3_uid(&uid) {
+        return Err("Server酱3 UID 只能包含字母、数字或短横线".to_string());
+    }
+
+    Ok(format!(
+        "https://{}.push.ft07.com/send/{}.send",
+        uid,
+        encode_path_segment(send_key)
+    ))
+}
+
+fn serverchan3_uid(config: &ServerChan3Config) -> Option<String> {
+    let uid = config.uid.trim();
+    if !uid.is_empty() {
+        return Some(uid.to_string());
+    }
+    serverchan3_uid_from_send_key(&config.send_key)
+}
+
+fn is_valid_serverchan3_uid(uid: &str) -> bool {
+    !uid.is_empty()
+        && uid
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn serverchan3_uid_from_send_key(send_key: &str) -> Option<String> {
+    let send_key = send_key.trim();
+    let lower = send_key.to_ascii_lowercase();
+    let rest = lower.strip_prefix("sctp")?;
+    let digits_len = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .map(char::len_utf8)
+        .sum::<usize>();
+    if digits_len == 0 || rest.get(digits_len..=digits_len)? != "t" {
+        return None;
+    }
+    Some(rest[..digits_len].to_string())
+}
+
+fn serverchan3_form_payload(
+    config: &ServerChan3Config,
+    title: &str,
+    desp: &str,
+) -> Vec<(String, String)> {
+    let mut form = vec![
+        ("title".to_string(), title.to_string()),
+        ("desp".to_string(), desp.to_string()),
+    ];
+    if !config.channel.trim().is_empty() {
+        form.push(("channel".to_string(), config.channel.trim().to_string()));
+    }
+    if !config.openid.trim().is_empty() {
+        form.push(("group".to_string(), config.openid.trim().to_string()));
+    }
+    form
+}
+
+fn serverchan3_response_result(status: StatusCode, body: String) -> Result<String, String> {
+    if !status.is_success() {
+        return Err(format!("Server酱3 returned HTTP {}: {}", status, body));
+    }
+
+    let value = serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("Server酱3 返回内容不是合法 JSON：{}；{}", err, body))?;
+    let code = value
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("Server酱3 返回缺少 code 字段：{}", body))?;
+    if code != 0 {
+        let message = value
+            .get("message")
+            .or_else(|| value.get("msg"))
+            .and_then(Value::as_str)
+            .unwrap_or(&body);
+        return Err(format!("Server酱3 returned code {}: {}", code, message));
+    }
+
+    Ok(format!("Server酱3 test successful (status: {})", status))
+}
+
+fn split_receiver_addresses(value: &str) -> Vec<String> {
+    value
+        .split(|ch| matches!(ch, ',' | ';' | '\n' | '\r' | '，' | '；'))
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn mailbox_from_config(address: &str, name: &str, label: &str) -> Result<Mailbox, String> {
+    let address = address.trim();
+    if address.is_empty() {
+        return Err(format!("{label}邮箱未配置"));
+    }
+    let address = address
+        .parse::<Address>()
+        .map_err(|err| format!("{label}邮箱格式无效：{err}"))?;
+    let name = name.trim();
+    Ok(Mailbox::new(
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        },
+        address,
+    ))
+}
+
+fn email_receivers_from_config(value: &str) -> Result<Vec<Mailbox>, String> {
+    let addresses = split_receiver_addresses(value);
+    if addresses.is_empty() {
+        return Err("收件人邮箱未配置".to_string());
+    }
+    addresses
+        .iter()
+        .map(|address| mailbox_from_config(address, "", "收件人"))
+        .collect()
+}
+
+fn build_email_message(
+    config: &EmailConfig,
+    sender: Mailbox,
+    receivers: Vec<Mailbox>,
+    subject: &str,
+    body: &str,
+) -> Result<Message, String> {
+    let mut builder = Message::builder().from(sender).subject(subject);
+    for receiver in receivers {
+        builder = builder.to(receiver);
+    }
+
+    let part = match config.message_format.trim().to_ascii_lowercase().as_str() {
+        "" | "plain" | "text" => Ok(SinglePart::plain(body.to_string())),
+        "html" => Ok(SinglePart::html(body.to_string())),
+        other => Err(format!("不支持的 Email 消息格式：{other}")),
+    }?;
+
+    builder
+        .singlepart(part)
+        .map_err(|err| format!("构建 Email 消息失败：{err}"))
+}
+
+fn build_email_transport(
+    config: &EmailConfig,
+) -> Result<AsyncSmtpTransport<Tokio1Executor>, String> {
+    let host = config.smtp_host.trim();
+    let port = config.smtp_port.max(1);
+    let tls = match config.smtp_security.trim().to_ascii_lowercase().as_str() {
+        "" | "implicit_tls" | "tls" => {
+            let tls_parameters = email_tls_parameters(host, config.allow_insecure_tls)?;
+            Tls::Wrapper(tls_parameters)
+        }
+        "starttls" => {
+            let tls_parameters = email_tls_parameters(host, config.allow_insecure_tls)?;
+            Tls::Required(tls_parameters)
+        }
+        "none" => Tls::None,
+        other => return Err(format!("不支持的 SMTP 安全模式：{other}")),
+    };
+    let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+        .port(port)
+        .tls(tls);
+
+    if !config.username.trim().is_empty() || !config.password.is_empty() {
+        builder = builder.credentials(Credentials::new(
+            config.username.trim().to_string(),
+            config.password.clone(),
+        ));
+    }
+
+    Ok(builder.build())
+}
+
+fn email_tls_parameters(host: &str, allow_insecure: bool) -> Result<TlsParameters, String> {
+    TlsParameters::builder(host.to_string())
+        .dangerous_accept_invalid_certs(allow_insecure)
+        .dangerous_accept_invalid_hostnames(allow_insecure)
+        .build()
+        .map_err(|err| format!("构建 SMTP TLS 参数失败：{err}"))
 }
 
 fn rule_matches(rule: &NotificationRule, event: &NotificationEvent<'_>) -> bool {
@@ -2311,6 +2566,8 @@ impl NotificationChannel {
             NotificationChannel::DingtalkApp => "dingtalk_app",
             NotificationChannel::FeishuRobot => "feishu_robot",
             NotificationChannel::Telegram => "telegram",
+            NotificationChannel::Email => "email",
+            NotificationChannel::ServerChan3 => "serverchan3",
         }
     }
 
@@ -2325,12 +2582,14 @@ impl NotificationChannel {
             NotificationChannel::DingtalkApp => "钉钉企业内机器人",
             NotificationChannel::FeishuRobot => "飞书机器人",
             NotificationChannel::Telegram => "Telegram机器人",
+            NotificationChannel::Email => "Email",
+            NotificationChannel::ServerChan3 => "Server酱3",
         }
     }
 }
 
 #[allow(dead_code)]
-fn all_channels() -> [NotificationChannel; 9] {
+fn all_channels() -> [NotificationChannel; 11] {
     [
         NotificationChannel::Webhook,
         NotificationChannel::Bark,
@@ -2341,6 +2600,8 @@ fn all_channels() -> [NotificationChannel; 9] {
         NotificationChannel::DingtalkApp,
         NotificationChannel::FeishuRobot,
         NotificationChannel::Telegram,
+        NotificationChannel::Email,
+        NotificationChannel::ServerChan3,
     ]
 }
 
@@ -2364,6 +2625,8 @@ fn should_send_sms_to_channel(
         NotificationChannel::DingtalkApp => should_send_sms(&config.dingtalk_app.common, false),
         NotificationChannel::FeishuRobot => should_send_sms(&config.feishu_robot.common, false),
         NotificationChannel::Telegram => should_send_sms(&config.telegram.common, false),
+        NotificationChannel::Email => should_send_sms(&config.email.common, false),
+        NotificationChannel::ServerChan3 => should_send_sms(&config.serverchan3.common, false),
     }
 }
 
@@ -2397,6 +2660,8 @@ fn should_send_update_to_channel(
         NotificationChannel::DingtalkApp => should_send_update(&config.dingtalk_app.common),
         NotificationChannel::FeishuRobot => should_send_update(&config.feishu_robot.common),
         NotificationChannel::Telegram => should_send_update(&config.telegram.common),
+        NotificationChannel::Email => should_send_update(&config.email.common),
+        NotificationChannel::ServerChan3 => should_send_update(&config.serverchan3.common),
     }
 }
 
@@ -3189,6 +3454,103 @@ mod tests {
             ),
             "+10001|+10001|+10001|+10001"
         );
+    }
+
+    #[test]
+    fn builds_serverchan3_url_from_send_key_or_uid() {
+        let from_key = ServerChan3Config {
+            send_key: "sctp12345tsecret".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serverchan3_url(&from_key).unwrap(),
+            "https://12345.push.ft07.com/send/sctp12345tsecret.send"
+        );
+
+        let manual_uid = ServerChan3Config {
+            uid: "user-1".to_string(),
+            send_key: "manual-secret".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serverchan3_url(&manual_uid).unwrap(),
+            "https://user-1.push.ft07.com/send/manual%2Dsecret.send"
+        );
+    }
+
+    #[test]
+    fn serverchan3_requires_uid_when_send_key_cannot_be_parsed() {
+        let missing_uid = ServerChan3Config {
+            send_key: "manual-secret".to_string(),
+            ..Default::default()
+        };
+        assert!(serverchan3_url(&missing_uid).is_err());
+    }
+
+    #[test]
+    fn serverchan3_form_includes_optional_routing_fields() {
+        let config = ServerChan3Config {
+            channel: "9".to_string(),
+            openid: "openid-1".to_string(),
+            ..Default::default()
+        };
+        let form = serverchan3_form_payload(&config, "title", "content");
+
+        assert!(form.contains(&("title".to_string(), "title".to_string())));
+        assert!(form.contains(&("desp".to_string(), "content".to_string())));
+        assert!(form.contains(&("channel".to_string(), "9".to_string())));
+        assert!(form.contains(&("group".to_string(), "openid-1".to_string())));
+    }
+
+    #[test]
+    fn serverchan3_requires_zero_response_code() {
+        assert!(serverchan3_response_result(StatusCode::OK, r#"{"code":0}"#.to_string()).is_ok());
+        assert!(serverchan3_response_result(
+            StatusCode::OK,
+            r#"{"code":200,"message":"ok"}"#.to_string()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn email_receiver_parser_accepts_common_separators() {
+        let receivers = email_receivers_from_config(
+            "first@example.com; second@example.com\nthird@example.com，fourth@example.com",
+        )
+        .unwrap();
+
+        assert_eq!(receivers.len(), 4);
+    }
+
+    #[test]
+    fn email_receiver_parser_rejects_invalid_address() {
+        assert!(email_receivers_from_config("not-an-email").is_err());
+    }
+
+    #[test]
+    fn email_builders_validate_format_and_security() {
+        let mut config = EmailConfig {
+            smtp_host: "smtp.example.com".to_string(),
+            sender_address: "sender@example.com".to_string(),
+            receiver_addresses: "receiver@example.com".to_string(),
+            message_format: "plain".to_string(),
+            ..Default::default()
+        };
+        let sender = mailbox_from_config(&config.sender_address, "", "发件人").unwrap();
+        let receivers = email_receivers_from_config(&config.receiver_addresses).unwrap();
+        assert!(build_email_message(&config, sender, receivers, "subject", "body").is_ok());
+
+        config.message_format = "markdown".to_string();
+        let sender = mailbox_from_config(&config.sender_address, "", "发件人").unwrap();
+        let receivers = email_receivers_from_config(&config.receiver_addresses).unwrap();
+        assert!(build_email_message(&config, sender, receivers, "subject", "body").is_err());
+
+        config.message_format = "plain".to_string();
+        config.smtp_security = "starttls".to_string();
+        assert!(build_email_transport(&config).is_ok());
+
+        config.smtp_security = "invalid".to_string();
+        assert!(build_email_transport(&config).is_err());
     }
 
     #[test]

@@ -600,6 +600,8 @@ export type NotificationChannelKey =
   | 'dingtalk_app'
   | 'feishu_robot'
   | 'telegram'
+  | 'email'
+  | 'serverchan3'
 
 export type NotificationEventType = 'sms' | 'ddns' | 'version_update' | 'system_event' | 'device_status' | 'automation'
 export type NotificationLogStatus = 'success' | 'failed' | 'no_available_channel' | 'quiet_hours' | 'unmatched'
@@ -683,6 +685,26 @@ export interface TelegramConfig extends MessageChannelConfig {
   chat_id: string
   parse_mode: string
   disable_web_page_preview: boolean
+}
+
+export interface EmailConfig extends MessageChannelConfig {
+  smtp_host: string
+  smtp_port: number
+  smtp_security: 'implicit_tls' | 'starttls' | 'none'
+  allow_insecure_tls: boolean
+  username: string
+  password: string
+  sender_address: string
+  sender_name: string
+  receiver_addresses: string
+  message_format: 'plain' | 'html'
+}
+
+export interface ServerChan3Config extends MessageChannelConfig {
+  send_key: string
+  uid: string
+  channel: string
+  openid: string
 }
 
 export interface NotificationConfig {

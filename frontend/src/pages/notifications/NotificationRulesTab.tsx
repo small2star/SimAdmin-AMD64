@@ -54,6 +54,24 @@ const EVENT_ICONS: Record<NotificationEventType, typeof Sms> = {
   automation: AutoMode,
 }
 
+const ruleTextFieldSx = {
+  '& .MuiInputBase-input': {
+    fontSize: '14px',
+  },
+  '& .MuiInputBase-input::placeholder': {
+    fontSize: '14px',
+  },
+  '& .MuiInputLabel-root': {
+    fontSize: '14px',
+  },
+  '& .MuiSelect-select': {
+    fontSize: '14px',
+  },
+  '& .MuiFormControlLabel-label': {
+    fontSize: '14px',
+  },
+} as const
+
 type NotificationRulesTabProps = {
   config: NotificationConfig
   selectedEventType: NotificationEventType
@@ -187,7 +205,7 @@ export default function NotificationRulesTab({
   )
 
   return (
-    <Card sx={{ height: 'calc(100vh - 220px)', minHeight: 520 }}>
+    <Card sx={{ height: 'calc(100vh - 220px)', minHeight: 520, ...ruleTextFieldSx }}>
       <CardContent sx={{ height: '100%', p: 0, '&:last-child': { pb: 0 } }}>
         <Box display="flex" height="100%">
           {!isCompact && (
