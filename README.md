@@ -1,12 +1,13 @@
-<a href="https://github.com/3899/SimAdmin">
-  <img src="https://socialify.git.ci/3899/SimAdmin/image?description=1&descriptionEditable=%E9%9D%A2%E5%90%91%20Debian%20%E5%B9%B3%E5%8F%B0%E6%94%AF%E6%8C%81%20SIM%2FeSIM%20%E8%9C%82%E7%AA%9D%E8%AE%BE%E5%A4%87%E7%9A%84%E5%BC%80%E6%BA%90%20Web%20%E7%AE%A1%E7%90%86%E7%B3%BB%E7%BB%9F&font=Source%20Code%20Pro&logo=https%3A%2F%2Fgithub.com%2F3899%2FSimAdmin%2Fblob%2Fmain%2Ffrontend%2Fpublic%2Fsimadmin-logo.svg%3Fraw%3Dtrue&name=1&owner=1&pattern=Floating%20Cogs&theme=Auto" alt="SimAdmin" />
+<a href="https://github.com/small2star/SimAdmin-AMD64">
+  <img src="https://socialify.git.ci/small2star/SimAdmin-AMD64/image?description=1&descriptionEditable=%E9%9D%A2%E5%90%91%20Debian%20%E5%B9%B3%E5%8F%B0%E6%94%AF%E6%8C%81%20SIM%2FeSIM%20%E8%9C%82%E7%AA%9D%E8%AE%BE%E5%A4%87%E7%9A%84%E5%BC%80%E6%BA%90%20Web%20%E7%AE%A1%E7%90%86%E7%B3%BB%E7%BB%9F&font=Source%20Code%20Pro&logo=https%3A%2F%2Fgithub.com%2Fsmall2star%2FSimAdmin-AMD64%2Fblob%2Fmain%2Ffrontend%2Fpublic%2Fsimadmin-logo.svg%3Fraw%3Dtrue&name=1&owner=1&pattern=Floating%20Cogs&theme=Auto" alt="SimAdmin-AMD64" />
 </a>
+> **🏷️ AMD64 Build Fork** — 本仓库是 [3899/SimAdmin](https://github.com/3899/SimAdmin) 的 Fork，专为 **amd64 (x86_64)** 架构编译发布。上游更新后自动同步并触发编译。ARM64 版本请使用原版。
 
 <div align="center">
   <br/>
 
   <div>
-    <a href="https://github.com/3899/SimAdmin/releases">
+    <a href="https://github.com/small2star/SimAdmin-AMD64/releases"><img alt="AMD64" src="https://img.shields.io/badge/AMD64-x86__64-blue?style=flat-square" /></a><a href="https://github.com/small2star/SimAdmin-AMD64/releases">
       <img 
         alt="Debian"
         src="https://img.shields.io/badge/Debian-%23D70A53?logo=debian&logoColor=white&style=flat-square" 
@@ -14,17 +15,17 @@
     </a >
     <a href="./LICENSE">
       <img
-        src="https://img.shields.io/github/license/3899/SimAdmin?style=flat-square"
+        src="https://img.shields.io/github/license/small2star/SimAdmin-AMD64?style=flat-square"
       />
     </a >
-    <a href="https://github.com/3899/SimAdmin/releases">
+    <a href="https://github.com/small2star/SimAdmin-AMD64/releases">
       <img
-        src="https://img.shields.io/github/v/release/3899/SimAdmin?style=flat-square"
+        src="https://img.shields.io/github/v/release/small2star/SimAdmin-AMD64?style=flat-square"
       />
     </a >
-    <a href="https://github.com/3899/SimAdmin/releases">
+    <a href="https://github.com/small2star/SimAdmin-AMD64/releases">
       <img
-        src="https://img.shields.io/github/downloads/3899/SimAdmin/total?style=flat-square"
+        src="https://img.shields.io/github/downloads/small2star/SimAdmin-AMD64/total?style=flat-square"
       />  
     </a >
   </div>
