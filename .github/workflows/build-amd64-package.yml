@@ -2,25 +2,6 @@ name: Build-AMD64-Package
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号（例如：1.0.0）'
-        required: false
-        type: string
-        default: 'auto'
-      use_upx:
-        description: 'build with upx'
-        required: false
-        type: boolean
-        default: true
-      release_type:
-        description: '发布类型（Release type）'
-        required: true
-        type: choice
-        default: '最新正式版（latest release）'
-        options:
-          - '最新正式版（latest release）'
-          - '预发布版（pre-release）'
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,42 +12,32 @@ permissions:
 
 jobs:
   build-amd64:
-    name: Build AMD64 Package
     runs-on: ubuntu-24.04
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Read VERSION
         id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
-          VERSION=$(echo "$INPUT_VERSION" | tr -d '[:space:]')
-          if [ -z "$VERSION" ] || [ "$VERSION" = "auto" ]; then
-            VERSION="$CURRENT_VERSION"
-            SOURCE="VERSION file"
-          else
-            SOURCE="workflow input"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          V=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$V" >> $GITHUB_OUTPUT
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Install dependencies
+      - name: Install system deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools upx-ucl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools upx-ucl
 
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -74,11 +45,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             backend/target/
-          key: ${{ runner.os }}-amd64-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-amd64-musl-cargo-
+          key: ${{ runner.os }}-amd64-musl-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build backend (x86_64-unknown-linux-musl)
+      - name: Build backend
         working-directory: backend
         run: |
           export CC_X86_64_UNKNOWN_LINUX_MUSL=musl-gcc
@@ -96,43 +65,21 @@ jobs:
       - name: Package OTA
         id: package
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          OTA_TMP=$(mktemp -d)
-          cp backend/target/x86_64-unknown-linux-musl/release/simadmin $OTA_TMP/simadmin
-          BINARY_MD5=$(md5sum $OTA_TMP/simadmin | cut -d' ' -f1)
-          mkdir -p $OTA_TMP/www
-          cp -r frontend/dist/* $OTA_TMP/www/
-          FRONTEND_MD5=$(find $OTA_TMP/www -type f -exec md5sum {} \; | cut -d' ' -f1 | sort | md5sum | cut -d' ' -f1)
-          cat > $OTA_TMP/meta.json << EOF
-          { "version": "$VERSION", "build_time": "$BUILD_TIME", "binary_md5": "$BINARY_MD5", "frontend_md5": "$FRONTEND_MD5", "arch": "amd64" }
-          EOF
           mkdir -p release
-          OTA_FILE="release/simadmin-amd64.tar.gz"
-          cd $OTA_TMP && tar -czf $GITHUB_WORKSPACE/$OTA_FILE meta.json simadmin www && cd $GITHUB_WORKSPACE
-          OTA_MD5=$(md5sum $OTA_FILE | cut -d' ' -f1)
-          echo "ota_file=$OTA_FILE" >> $GITHUB_OUTPUT
-          echo "ota_md5=$OTA_MD5" >> $GITHUB_OUTPUT
-          echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+          tar -czf release/simadmin-amd64.tar.gz -C backend/target/x86_64-unknown-linux-musl/release simadmin
+          cp -r frontend/dist release/www
+          OM=$(md5sum release/simadmin-amd64.tar.gz | cut -d' ' -f1)
+          echo "ota_file=release/simadmin-amd64.tar.gz" >> $GITHUB_OUTPUT
+          echo "ota_md5=$OM" >> $GITHUB_OUTPUT
 
-      - name: Publish OTA package
+      - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: SimAdmin_v${{ steps.version.outputs.version }}_amd64
-          files: release/simadmin-amd64.tar.gz
+          files: |
+            release/simadmin-amd64.tar.gz
+            release/www/
           overwrite_files: true
-          generate_release_notes: true
-          body: |
-            ## AMD64 Build v${{ steps.version.outputs.version }}
-            - Arch: amd64 (x86_64)
-            - File: simadmin-amd64.tar.gz
-            - MD5: ${{ steps.package.outputs.ota_md5 }}
-          draft: false
-          prerelease: ${{ inputs.release_type == '预发布版（pre-release）' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Summary
-        run: |
-          echo "## AMD64 Build Complete" >> $GITHUB_STEP_SUMMARY
