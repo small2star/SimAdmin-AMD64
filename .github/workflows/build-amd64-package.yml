@@ -72,8 +72,11 @@ jobs:
         id: package
         run: |
           mkdir -p release
-          tar -czf release/simadmin-amd64.tar.gz -C backend/target/x86_64-unknown-linux-musl/release simadmin
-          cp -r frontend/dist release/www
+          TMP=$(mktemp -d)
+          cp backend/target/x86_64-unknown-linux-musl/release/simadmin $TMP/
+          cp -r frontend/dist $TMP/www
+          tar -czf release/simadmin-amd64.tar.gz -C $TMP .
+          rm -rf $TMP
           OM=$(md5sum release/simadmin-amd64.tar.gz | cut -d" " -f1)
           echo "ota_file=release/simadmin-amd64.tar.gz" >> $GITHUB_OUTPUT
           echo "ota_md5=$OM" >> $GITHUB_OUTPUT
@@ -85,7 +88,6 @@ jobs:
           name: SimAdmin_v${{ steps.version.outputs.version }}_amd64
           files: |
             release/simadmin-amd64.tar.gz
-            release/www/
           overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
