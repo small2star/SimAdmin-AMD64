@@ -1,8 +1,8 @@
-#!/bin/sh
+﻿#!/bin/sh
 
 set -eu
 
-REPO="${REPO:-3899/SimAdmin}"
+REPO="${REPO:-small2star/SimAdmin-AMD64}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/simadmin}"
 SERVICE_NAME="${SERVICE_NAME:-simadmin}"
 VERSION="${VERSION:-latest}"
@@ -13,7 +13,7 @@ SERVICE_URL="${SERVICE_URL:-${RAW_BASE}/main/scripts/simadmin.service}"
 MODEM_RECOVERY_SCRIPT_URL="${MODEM_RECOVERY_SCRIPT_URL:-${RAW_BASE}/main/scripts/simadmin-modem-recovery.sh}"
 MODEM_RECOVERY_SERVICE_URL="${MODEM_RECOVERY_SERVICE_URL:-${RAW_BASE}/main/scripts/simadmin-modem-recovery.service}"
 ASSET_URL="${ASSET_URL:-}"
-ASSET_NAME="${ASSET_NAME:-simadmin.tar.gz}"
+ASSET_NAME="${ASSET_NAME:-simadmin-amd64.tar.gz}"
 SIMADMIN_INSTALL_LPAC="${SIMADMIN_INSTALL_LPAC:-1}"
 LPAC_REPO="${LPAC_REPO:-estkme-group/lpac}"
 LPAC_RELEASE_BASE_URL="${LPAC_RELEASE_BASE_URL:-https://github.com/${LPAC_REPO}/releases/latest/download}"
@@ -811,3 +811,5 @@ main() {
 }
 
 main "$@"
+
+
