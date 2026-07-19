@@ -152,6 +152,7 @@ function InfoField({ label, value, sensitive = false, showSensitive, extra }: {
 }
 
 function SmsCapacityProgress({ used, total }: { used?: number, total?: number }) {
+  // eslint-disable-next-line eqeqeq -- intentional null/undefined coalesce
   if (used == null || total == null || total === 0) return <Typography variant="body2" sx={{ fontSize: '0.825rem' }}>N/A</Typography>;
   const percentage = Math.min((used / total) * 100, 100);
   const isFull = used >= total;
@@ -649,4 +650,5 @@ export default function SimCardPage() {
     </Box>
   )
 }
+
 
