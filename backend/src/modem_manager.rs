@@ -1,4 +1,4 @@
-//! ModemManager integration for modem, SIM, network and SMS control.
+﻿//! ModemManager integration for modem, SIM, network and SMS control.
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -1881,10 +1881,8 @@ async fn refresh_sim_details_background_inner(conn: &Connection, db: &Database, 
 
     if force || sms_storage_cache_incomplete(db, &identity) {
         let mut storage = None;
-        if let Some(path) = modem_path.as_deref() {
-            if let Ok(output) = send_at_via_modem_command(conn, path, "AT+CPMS?").await {
-                storage = parse_sms_storage_info(&output);
-            }
+        if let Ok(output) = run_direct_at_command(conn, "AT+CPMS?").await {
+            storage = parse_sms_storage_info(&output);
         }
         match storage {
             Some((used, total)) => {
@@ -6827,3 +6825,4 @@ pub async fn data_connection_watchdog(
         }
     }
 }
+
